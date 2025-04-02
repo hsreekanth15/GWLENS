@@ -34,11 +34,12 @@ def compute_and_store_results_2D(hdf5_file, w_values, y_values,ampf):
 def compute_and_store_results_3D(hdf5_file, w_values, y_values, rs_values,ampf):
     with h5py.File(hdf5_file, 'w') as file:
         #The values of the dimensionless frequency  and y_values will be stored here
+        print("Running Interpolator")
         file.create_dataset("w_values", data=w_values)
         file.create_dataset("y_values", data=y_values)
         file.create_dataset("rs_values", data=rs_values)
 
-        dset = file.create_dataset("results", (100, 100, 10, 2), maxshape=(None, None, None, None), dtype='float64')
+        dset = file.create_dataset("results", (len(w_values), len(y_values),len(rs_values), 2), maxshape=(None, None, None, None), dtype='float64')
         total_iterations = len(w_values) * len(y_values) * len(rs_values)
         progress = tqdm(total=total_iterations, desc="Storing Results", unit="calc")
         for i, w in enumerate(w_values):
