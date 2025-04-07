@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gwlens"
+version = "0.1"
+description = "Gravitational lensing CLI"
+dependencies = ["numpy",
+"scipy",
+"h5py",
+"joblib",
+"astropy",
+"mpmath",
+"tqdm",
+"matplotlib"]
+
+[project.scripts]
+gwlens_interpolate = "gwlens.tools.interpolator:interpolate"
+gwlens_microlensing = "gwlens.tools.executor:execute"
+gwlens_generate_default_ini = "gwlens.tools.generate_ini:main"
