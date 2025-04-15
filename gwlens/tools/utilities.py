@@ -1,9 +1,61 @@
 import numpy as np
 from tqdm import tqdm
-from scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import RegularGridInterpolator,RectBivariateSpline
 import h5py
 
+def interpolate_2D_spline(interpolation_file, w_query, y_query):
+    with h5py.File(interpolation_file, 'r') as file:
+        w_values = file['w_values'][:]
+        y_values = file['y_values'][:]
+        data = file['results'][:]  # (len(w), len(y), 2)
 
+    real_data = data[:, :, 0]
+    imag_data = data[:, :, 1]
+
+    real_spline = RectBivariateSpline(w_values, y_values, real_data, kx=3, ky=3)
+    imag_spline = RectBivariateSpline(w_values, y_values, imag_data, kx=3, ky=3)
+
+    real_result = real_spline(w_query, y_query, grid=True)
+    imag_result = imag_spline(w_query, y_query, grid=True)
+
+    result = real_result + 1j * imag_result
+    return result
+
+def interpolate_NFW_fixed_rs(interpolation_file, rs_fixed, w_query, y_query):
+
+    '''
+
+    NFW has three parameters and therefore interpolation on all three variables 
+    is complicated and less accurate. Here r_s values are fixed and interpolation is 
+    done over w and y using cubic spline. 
+    '''
+
+
+    with h5py.File(interpolation_file, 'r') as file:
+        w_values = file['w_values'][:]      # shape: (Nw,)
+        y_values = file['y_values'][:]      # shape: (Ny,)
+        rs_values = file['rs_values'][:]    # shape: (Nrs,)
+        data = file['results'][:]           # shape: (Nw, Ny, Nrs, 2)
+
+    # Find nearest index to fixed rs value
+    rs_idx = np.argmin(np.abs(rs_values - rs_fixed))
+    actual_rs = rs_values[rs_idx]
+
+    # Extract 2D slice at fixed rs
+    real_slice = data[:, :, rs_idx, 0]  # shape: (Nw, Ny)
+    imag_slice = data[:, :, rs_idx, 1]  # shape: (Nw, Ny)
+
+    # Create cubic spline interpolators
+    real_spline = RectBivariateSpline(w_values, y_values, real_slice, kx=3, ky=3)
+    imag_spline = RectBivariateSpline(w_values, y_values, imag_slice, kx=3, ky=3)
+
+    # Evaluate interpolation on query grid
+    real_result = real_spline(w_query, y_query, grid=True)
+    imag_result = imag_spline(w_query, y_query, grid=True)
+
+    result = real_result + 1j * imag_result
+
+    return result, actual_rs
 
 def compute_and_store_results_2D(hdf5_file, w_values, y_values,ampf):
     with h5py.File(hdf5_file, 'w') as file:
@@ -73,7 +125,7 @@ def load_and_interpolate_2D(interpolation_file, w_query, y_query):
     result = real_interp(point)[0] + 1j * imag_interp(point)[0]
     return result
 
-def load_and_interpolate_3D(interpolation_file, w_values, y_values, rs_values, w_query, y_query, rs_query):
+def load_and_interpolate_3D(interpolation_file, w_query, y_query, rs_query):
     with h5py.File(interpolation_file, 'r') as file:
         w_values = file['w_values'][:]
         y_values = file['y_values'][:]
@@ -83,15 +135,27 @@ def load_and_interpolate_3D(interpolation_file, w_values, y_values, rs_values, w
     real_data = data[:, :, :, 0]
     imag_data = data[:, :, :, 1]
 
-    # Create interpolators
+    # Create interpolators (linear interpolation by default)
     real_interp = RegularGridInterpolator((w_values, y_values, rs_values), real_data)
     imag_interp = RegularGridInterpolator((w_values, y_values, rs_values), imag_data)
 
-    # Evaluate at point
-    point = np.array([[w_query, y_query, rs_query]])
-    result = real_interp(point)[0] + 1j * imag_interp(point)[0]
-    return result
+    # Ensure inputs are arrays
+    w_query = np.atleast_1d(w_query)
+    y_query = np.atleast_1d(y_query)
+    rs_query = np.atleast_1d(rs_query)
 
+    # Generate meshgrid for all combinations
+    W_grid, Y_grid, RS_grid = np.meshgrid(w_query, y_query, rs_query, indexing='ij')
+    points = np.column_stack([W_grid.ravel(), Y_grid.ravel(), RS_grid.ravel()])
+
+    # Perform interpolation
+    real_result = real_interp(points)
+    imag_result = imag_interp(points)
+
+    result = real_result + 1j * imag_result
+    result = result.reshape(W_grid.shape)
+
+    return result
 def ensure_1d_array(w):
     """
     Ensures that the input 'w' is a 1D numpy array.

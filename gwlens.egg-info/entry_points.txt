@@ -1,0 +1,4 @@
+[console_scripts]
+gwlens_generate_default_ini = gwlens.tools.generate_ini:main
+gwlens_interpolate = gwlens.tools.interpolator:interpolate
+gwlens_microlensing = gwlens.tools.executor:execute
