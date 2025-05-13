@@ -2,9 +2,9 @@ import configparser
 import argparse
 import os
 import numpy as np
-from gwlens.lens import nfwparallel
+from gwlens.lens import pointparallel,sis,nfwparallel
 import matplotlib.pyplot as plt
-from gwlens.lens import pointparallel
+
 
 
 
@@ -28,7 +28,7 @@ def interpolate():
     #Reading Interpolation Data
 
     #Valid lens models
-    valid_lens_models = ['point', 'nfw']
+    valid_lens_models = ['point', 'sis' ,'nfw']
 
     n_parallel = int(config['Interpolation']['n-parallel'])
 
@@ -78,6 +78,10 @@ def interpolate():
     if lensmodel == "point":
         print(f"Lens : {lensmodel}")
         pointparallel.compute_point_lens_grid(w, y, output_path, num_processes=n_parallel)
+
+    elif lensmodel == "sis":
+        print(f"Lens: {lensmodel}")
+        sis.compute_sis_lens_grid(w,y,output_path, num_processes=n_parallel)    
 
 
     elif lensmodel == "nfw":

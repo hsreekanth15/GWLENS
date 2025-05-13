@@ -13,6 +13,7 @@ gwlens/lens/nfw.py
 gwlens/lens/nfwparallel.py
 gwlens/lens/point.py
 gwlens/lens/pointparallel.py
+gwlens/lens/sis.py
 gwlens/tools/__init__.py
 gwlens/tools/executor.py
 gwlens/tools/generate_ini.py
