@@ -2,7 +2,7 @@ import configparser
 import argparse
 import os
 import numpy as np
-from gwlens.lens import pointparallel,sis,nfwparallel
+from gwlens.lens import pointparallel,sis,nfwparallel,powerlaw
 import matplotlib.pyplot as plt
 
 
@@ -28,7 +28,7 @@ def interpolate():
     #Reading Interpolation Data
 
     #Valid lens models
-    valid_lens_models = ['point', 'sis' ,'nfw']
+    valid_lens_models = ['point', 'sis' ,'nfw', 'powerlaw']
 
     n_parallel = int(config['Interpolation']['n-parallel'])
 
@@ -68,6 +68,13 @@ def interpolate():
         rs_upper = float(config['Interpolation']['scale_radius_upper_limit'])
         rs_samples = int(config['Interpolation']['scale_radius_samples'])
         rs = np.linspace(rs_lower,rs_upper,rs_samples) 
+    
+    elif lensmodel == "powerlaw":
+
+        amp = float(config['Interpolation']['powerlaw_amplitude'])
+        core = float(config['Interpolation']['powerlaw_coreradius'])
+        p = float(config['Interpolation']['powerlaw_exponent'])
+
 
 
 
@@ -87,6 +94,9 @@ def interpolate():
     elif lensmodel == "nfw":
         print(f"Lens : {lensmodel}")
         nfwparallel.compute_nfw_lens_test(w,y,rs,output_path,num_jobs=n_parallel)
+
+    elif lensmodel == "powerlaw":
+        powerlaw.compute_powerlaw_lens_grid(w,y,amp,core,p,output_path,num_processes = n_parallel)
 
 
 

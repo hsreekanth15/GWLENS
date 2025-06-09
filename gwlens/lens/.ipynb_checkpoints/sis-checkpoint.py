@@ -35,15 +35,27 @@ def calculate_F(w, y, n_lim, epsilon=1e-30):
     return result * const
 
 
+def SIS(w_range, y, n_lim):
+    F_sis_an = []
+    for ww in w_range:
+        tmp = calculate_F(ww, y, n_lim)
+        if tmp == -1:
+            break
+        else:
+            # Convert mpmath complex number to Python native complex
+            F_sis_an.append(complex(tmp))
+    return np.array(F_sis_an, dtype=complex)
+
+
 
 
 def _worker(args):
-    i, j, w, y,n_lim = args
-    val = calculate_F(w, y, n_lim)
+    i, j, w, y = args
+    val = SIS(w, y)
     return i, j, val.real, val.imag
 
 
-def compute_sis_lens_grid(w_values, y_values, hdf5_filename, n_lim = 200 ,num_processes=None):
+def compute_sis_lens_grid(w_values, y_values, hdf5_filename, num_processes=None):
     """
     Computes the Point(w, y) complex amplification factor over a grid
     and stores the result in an HDF5 file.
@@ -95,11 +107,11 @@ def compute_sis_lens_grid(w_values, y_values, hdf5_filename, n_lim = 200 ,num_pr
     total_points = W_len * Y_len
 
     # Create task list
-    tasks = [(i, j, w_values[i], y_values[j],n_lim ) for i in range(W_len) for j in range(Y_len)]
+    tasks = [(i, j, w_values[i], y_values[j]) for i in range(W_len) for j in range(Y_len)]
 
     logger.info(f" Output file: {hdf5_filename}")
     logger.info(f" Grid size: {W_len} × {Y_len} → {total_points} points")
-    logger.info(f"Launching parallel computation with {num_processes} tasks")
+    logger.info("Launching parallel computation...")
 
     start_time = time.time()
 
