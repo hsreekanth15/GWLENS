@@ -2,7 +2,7 @@ import configparser
 import argparse
 import os
 import numpy as np
-from gwlens.lens import pointparallel,sis,nfwparallel,powerlaw
+from gwlens.lens import pointparallel,sis,nfw,powerlaw
 import matplotlib.pyplot as plt
 
 
@@ -93,7 +93,7 @@ def interpolate():
 
     elif lensmodel == "nfw":
         print(f"Lens : {lensmodel}")
-        nfwparallel.compute_nfw_lens_test(w,y,rs,output_path,num_jobs=n_parallel)
+        nfw.compute_nfw_lens_grid(w,y,rs,output_path,num_processes=n_parallel)
 
     elif lensmodel == "powerlaw":
         powerlaw.compute_powerlaw_lens_grid(w,y,amp,core,p,output_path,num_processes = n_parallel)

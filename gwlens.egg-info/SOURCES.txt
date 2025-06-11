@@ -10,6 +10,7 @@ gwlens.egg-info/top_level.txt
 gwlens/lens/__init__.py
 gwlens/lens/microlensing.py
 gwlens/lens/nfw.py
+gwlens/lens/nfw_old.py
 gwlens/lens/nfwparallel.py
 gwlens/lens/point.py
 gwlens/lens/pointparallel.py
