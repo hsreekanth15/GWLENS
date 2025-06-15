@@ -3,7 +3,6 @@ import numpy as np
 from scipy.special import jv
 from scipy.integrate import quad
 import warnings
-
 #from functools import lru_cache
 
 warnings.simplefilter('ignore')

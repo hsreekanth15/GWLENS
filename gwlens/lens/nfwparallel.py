@@ -4,7 +4,7 @@ import time
 import os
 import logging
 from joblib import Parallel, delayed
-from .nfw import NFW  # Ensure NFW(w, y, rs) is available
+from .nfw_old import NFW  # Ensure NFW(w, y, rs) is available
 
 # Setup logger (you can customize the path or pass it in)
 logger = logging.getLogger("nfw_interpolator")

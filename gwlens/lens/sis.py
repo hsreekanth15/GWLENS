@@ -43,7 +43,7 @@ def _worker(args):
     return i, j, val.real, val.imag
 
 
-def compute_sis_lens_grid(w_values, y_values, hdf5_filename, n_lim = 200 ,num_processes=None):
+def compute_sis_lens_grid(w_values, y_values, hdf5_filename, n_lim = 1000 ,num_processes=None):
     """
     Computes the Point(w, y) complex amplification factor over a grid
     and stores the result in an HDF5 file.
