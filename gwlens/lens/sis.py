@@ -8,7 +8,7 @@ import logging
 from mpmath import mp, mpc, exp, pi, gamma, factorial, hyp1f1, nstr
 
 # Set desired decimal precision (increase if needed)
-mp.dps = 50  # digits of precision
+mp.dps = 100  # digits of precision
 
 def calculate_F(w, y, n_lim, epsilon=1e-30):
     # Convert inputs to mpmath-compatible complex numbers
