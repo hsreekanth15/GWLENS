@@ -93,9 +93,10 @@ def interpolate():
 
     elif lensmodel == "nfw":
         print(f"Lens : {lensmodel}")
-        nfw.compute_nfw_lens_grid(w,y,rs,output_path,num_processes=n_parallel)
+        nfw.compute_nfw_lens_test(w,y,rs,output_path,num_jobs=n_parallel)
 
     elif lensmodel == "powerlaw":
+        print(f"Lens : {lensmodel}")
         powerlaw.compute_powerlaw_lens_grid(w,y,amp,core,p,output_path,num_processes = n_parallel)
 
 
