@@ -26,6 +26,8 @@ This will produce and output with the name you provided and the interpolation fi
 GWLENS also support parallel processing, this can be enabled by simply providing the number of cpus in the parmaters.ini file ( for ex. `n-paralle= 8` ). This will speed up the
 amplification factor evaluation.
 
-GWLENS also comes with lensed waveforms which can be used with the popular paramter estimation tool `bilby`. The waveforms are located in the pe/waveform folder..
+GWLENS also comes with lensed waveforms which can be used with the popular paramter estimation tool `bilby`. The waveforms are located in the pe/waveform folder. Bilby and Bilby_pipe needs to be installed
+separately to use them with GWLENS.
+
 
 
