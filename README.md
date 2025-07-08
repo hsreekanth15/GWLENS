@@ -5,6 +5,7 @@ Author: Sreekanth Harikumar
 The package can be installed by downloading the entire code and using pip
 
 `cd GWLENS`
+
 `pip install .`
 
 GWLENS is completely written in  python and uses arbitrary precision library 'mpmath' to solve 
