@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: gwlens
+Version: 0.1
+Summary: Gravitational lensing CLI
+License-File: LICENSE
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: h5py
+Requires-Dist: joblib
+Requires-Dist: astropy
+Requires-Dist: mpmath
+Requires-Dist: tqdm
+Requires-Dist: matplotlib
+Dynamic: license-file

@@ -1,0 +1,8 @@
+numpy
+scipy
+h5py
+joblib
+astropy
+mpmath
+tqdm
+matplotlib

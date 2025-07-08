@@ -1,0 +1,6 @@
+2025-06-15 08:42:02 [INFO]  Output file: outdirsis/interpolation/sis.hdf5
+2025-06-15 08:42:02 [INFO]  Grid size: 1000 × 1 → 1000 points
+2025-06-15 08:42:02 [INFO] Launching parallel computation with 3 tasks
+2025-06-15 08:42:25 [INFO]  1000/1000 results written...
+2025-06-15 08:42:25 [INFO]  Done in 23.34 seconds
+2025-06-15 08:42:25 [INFO]  Saved to: outdirsis/interpolation/sis.hdf5
