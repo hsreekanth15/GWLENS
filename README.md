@@ -4,8 +4,8 @@ Author: Sreekanth Harikumar
 
 The package can be installed by downloading the entire code and using pip
 
-`cd GWLENS
-pip install .`
+`cd GWLENS`
+`pip install .`
 
 GWLENS is completely written in  python and uses arbitrary precision library 'mpmath' to solve 
 the Fersnal Kirchhoff diifraction integral accurately. GWLENS can also used with an .ini file (parameters.ini).
@@ -21,4 +21,10 @@ provide the range of values for the impact parameter $y$ and the dimensionless f
 
 `gwlens_interpolate parameters.ini`
 
-This will produce and output with the name you provided and the interpolation file in hdf5 format. 
+This will produce and output with the name you provided and the interpolation file in hdf5 format. The can also be found in the same directory for troubleshooting.
+GWLENS also support parallel processing, this can be enabled by simply providing the number of cpus in the parmaters.ini file ( for ex. `n-paralle= 8` ). This will speed up the
+amplification factor evaluation.
+
+GWLENS also comes with lensed waveforms which can be used with the popular paramter estimation tool `bilby`. The waveforms are located in the pe/waveform folder..
+
+
