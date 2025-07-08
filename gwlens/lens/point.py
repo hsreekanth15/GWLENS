@@ -4,11 +4,12 @@ author: Sreeakanth Harikumar
 
 import numpy as np
 import scipy.special as sc
-from mpmath import hyp1f1
+from mpmath import hyp1f1,exp, mp,sqrt,mpc,pi,log,gamma
 import cmath
 import mpmath
 from astropy.constants import c,G,M_sun
 
+mp.dps= 50
 
 #Define constants   
 c = c.value
@@ -48,7 +49,7 @@ def Point_multi(w, x):
             expon = np.exp(np.pi * w[i] / 4 + 1j * w[i] / 2 * (np.log(w[i] / 2) - 2 * phim))
             mp_w = mpmath.mpc(w[i])
             mp_y = mpmath.mpc(y[j])
-            f = expon * mpmath.gamma(1 - 1j / 2 * mp_w) * mpmath.hyp1f1(1j / 2 * mp_w, 1, 1j / 2 * mp_w * mp_y**2)
+            f = expon * mpmath.gamma(1 - 1j / 2 *w) * hyp1f1(1j / 2 * w, 1, 1j / 2 * w * y**2)
             Freal.append(f.real)
             Fimag.append(f.imag)   
     return Freal, Fimag
@@ -56,15 +57,18 @@ def Point_multi(w, x):
 
 
 def Point(w,y):
-    xm = (y + np.sqrt(y**2 + 4)) / 2
-    phim = (xm - y)**2 / 2 - np.log(xm)
-    expon = np.exp(np.pi * w / 4 + 1j * w / 2 * (np.log(w / 2) - 2 * phim))
-    mp_w = mpmath.mpc(w)
-    mp_y = mpmath.mpc(y)
-    f = expon * mpmath.gamma(1 - 1j / 2 * mp_w) * mpmath.hyp1f1(1j / 2 * mp_w, 1, 1j / 2 * mp_w * mp_y**2)
+
+    w = mpc(w)
+    y = mpc(y)
+    xm = (y + sqrt(y**2 + 4)) / 2
+    phim = (xm - y)**2 / 2 - log(xm)
+    expon = exp(pi * w / 4 + 1j * w / 2 * (log(w / 2) - 2 * phim))
+    #mp_w = mpmath.mpc(w)
+    #mp_y = mpmath.mpc(y)
+    f = expon *gamma(1 - 1j / 2 * w) * hyp1f1(1j / 2 * w, 1, 1j / 2 * w * y**2)
     #Fan.append(complex(f.real, f.imag)) 
-    F = complex(f.real, f.imag)
-    return F
+    #F = complex(f.real, f.imag)
+    return f
 
 
 

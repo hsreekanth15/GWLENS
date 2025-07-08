@@ -40,9 +40,9 @@ def execute():
     y0 = float(config['Microlens']['closest_approach'])
     t0 = float(config['Microlens']['Time_of_closest_approach'])
     Tobs = float(config['Microlens']['Tobs'])
-    samples = float(config['Microlens']['Number_of_samples'])
+    samples = int(config['Microlens']['Number_of_samples'])
     time = Tobs/2
-    t = np.linspace(-time, time, 1000)
+    t = np.linspace(-time, time, samples)
     ImpactParameter = microlensing.MicrolensingImpactparameter(t,y0,t0,tE)
 
     #Amplification Factor
@@ -53,8 +53,17 @@ def execute():
     print("w",w)
     y = ImpactParameter
 
-    result_F_real = np.array(point.Point(w, y)[0])
-    result_F_imag = np.array(point.Point(w, y)[1])
+    result_F_real = []
+    result_F_imag = []
+
+    for i in range(len(y)):
+        freal = point.Point(w,y[i]).real
+        fimag = point.Point(w,y[i]).imag
+        result_F_real.append(freal)
+        result_F_imag.append(fimag)
+
+    #result_F_real = np.array(point.Point(w, y)[0])
+    #result_F_imag = np.array(point.Point(w, y)[1])
 
     #Save results
     output_folder = config['Output']['outdir']
@@ -85,7 +94,8 @@ def execute():
     #plots
 
     generate_plots = config['Plots']['generate_plots'].strip().lower() == 'true'
-
+    result_F_real = np.array(result_F_real)
+    result_F_imag = np.array(result_F_imag)
     if generate_plots:
         F = result_F_real + 1j*result_F_imag
         F_absolute = np.abs(F)

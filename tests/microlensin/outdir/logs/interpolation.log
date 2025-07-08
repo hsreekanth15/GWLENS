@@ -1,0 +1,6 @@
+2025-07-04 22:24:35 [INFO]  Output file: outdir/interpolation/result_point.hdf5
+2025-07-04 22:24:35 [INFO]  Grid size: 1000 × 1 → 1000 points
+2025-07-04 22:24:35 [INFO] Launching parallel computation...
+2025-07-04 22:24:35 [INFO]  1000/1000 results written...
+2025-07-04 22:24:35 [INFO]  Done in 0.31 seconds
+2025-07-04 22:24:35 [INFO]  Saved to: outdir/interpolation/result_point.hdf5
