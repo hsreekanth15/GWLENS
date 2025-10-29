@@ -6,7 +6,7 @@ import os
 import configparser
 import logging
 from joblib import Parallel, delayed
-from mpmath import mp, mpc, sqrt, exp, besselj, quad,log, atan,atanh
+from mpmath import mp,mpf, mpc, sqrt, exp, besselj, quad,log, atan,atanh
 
 
 
@@ -21,7 +21,7 @@ if not logger.handlers:
 
 
 
-mp.dps = 70  # set precision to 50 decimal places (arbitrary precision)
+mp.dps = 200  # set precision to 50 decimal places (arbitrary precision)
 eps = 1e-3  # relative accuracy tolerance
 
 def psi(x, rs):
@@ -68,18 +68,22 @@ def ddfunc(x, w, y,rs):
 
 def NFW(w, y, rs):
 
-    #w = mpc(w)
-    #y = mpc(y)
-    #rs = mpc(rs)
-    a = 0.00001
+    # Convert inputs to mpmath types
+    w = mpf(w)        # real number
+    y = mpf(y)        # real number
+    rs = mpf(rs)      # real number
+    a = mpf('0.00001')
 
-    if w < 1 :
-        b = 100 / w
-    elif 1 < w < 500:
-        b = 1000/w 
-    else: b = 10000/w   
-    #zzp = mpc(-1)
-    
+    if w < 1:
+        b = mpf('100') / w
+    elif 1 < w < 400000:
+        b = mpf('1000') / w
+    elif 1000 < w < 500000:
+        b = mpf('100000') / w
+    elif 500000 < w < 10000000:
+        b = mpf('1000000') / w
+    else:
+        b = mpf('100000000') / w
     
     # mpmath.quad with complex integrand
     zz = quad(lambda x: func2(x, w, y,rs), [a, b], error=True, maxdegree=10)
