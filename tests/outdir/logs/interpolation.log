@@ -13,3 +13,9 @@
 2025-07-02 17:00:11 [INFO]  1000/1000 results written...
 2025-07-02 17:00:11 [INFO]  Done in 137.63 seconds
 2025-07-02 17:00:11 [INFO]  Saved to: outdir/interpolation/result.hdf5
+2025-10-30 14:44:07 [INFO]  Output file: outdir/interpolation/out.hdf5
+2025-10-30 14:44:07 [INFO]  Grid size: 1000 × 5 → 5000 points
+2025-10-30 14:44:07 [INFO] Launching parallel computation...
+2025-10-30 14:44:08 [INFO]  5000/5000 results written...
+2025-10-30 14:44:08 [INFO]  Done in 1.55 seconds
+2025-10-30 14:44:08 [INFO]  Saved to: outdir/interpolation/out.hdf5

@@ -20,7 +20,6 @@ if not logger.handlers:
     logger.addHandler(console_handler)
 
 
-
 mp.dps = 200  # set precision to 50 decimal places (arbitrary precision)
 eps = 1e-3  # relative accuracy tolerance
 
@@ -28,10 +27,15 @@ def psi(x, rs):
     if x == 0:
         return 0
     elif x < 1:
-        return rs/2 * ((log(x/2))**2 - atanh(sqrt(1 - x**2))**2)
+        return rs/2 * ((log(x/2))**2 - (atanh(sqrt(1 - x**2)))**2)
     else:
-        return rs/2 * ((log(x/2))**2 +  atan(sqrt(x**2 - 1))**2)
-    
+        return rs/2 * ((log(x/2))**2 +  (atan(sqrt(x**2 - 1)))**2)
+
+#def psi(x,rs):
+#
+#    bterm = mpf('2.01')   
+
+#    return rs*( (log(x/2*bterm))**2 - (atanh(sqrt(1 - ((x**2) /bterm**2)**2)))**2)
 
 def func(x, w, y,rs):
     # x: real integration variable (mpf)
