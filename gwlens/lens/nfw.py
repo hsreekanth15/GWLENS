@@ -23,7 +23,28 @@ if not logger.handlers:
 mp.dps = 200  # set precision to 50 decimal places (arbitrary precision)
 eps = 1e-3  # relative accuracy tolerance
 
-def psi(x, rs):
+def psi(x,k):
+    """
+    NFW lensing potential defined as per Villarrubia-Rojo et. al. 2024
+    The constant k = xi_0/r_s
+
+    To avoid replacing all the r_s with k. I have used k = rs in this form of lensing potential. This is only for testing purpose and hence will be replaced later.
+
+
+    """
+
+    u = rs*x
+    if u <= 1:
+
+        return 0.5*(  (log(u/2))**2 - (atanh(sqrt(1-u**2)))**2 )
+    else:
+
+        return 0.5( (log(u/2))**2 + (atan(sqrt(u**2 -1)))**2   )
+
+
+
+
+def psi_2(x, rs):
     if x == 0:
         return 0
     elif x < 1:
