@@ -72,16 +72,24 @@ class NFW:
 
         return 3.71e-4 * self.mass_enclosed(self.rs)*f
 
+    def scaling_ratio(self,D):
 
+        """
+        The ratio used in GLoW to produce u.
+        
+        """
+        return 2.4e-8 * np.sqrt(self.mass_enclosed(self.rs)*D)/self.rs
+
+    
 
     def summary(self):
         print(f"NFW Halo Summary:")
         print(f"  M_200       = {self.M200:.2e} Msun")
         print(f"  c           = {self.c}")
         print(f"  H_0         = {self.H0} km/s/Mpc")
-        print(f"  rho_c       = {self.rho_c:.2f} Msun/kpc^3")
-        print(f"  r_200       = {self.r200:.2f} kpc")
-        print(f"  r_s         = {self.rs:.2f} kpc")
+        print(f"  rho_c       = {self.rho_c:.5f} Msun/kpc^3")
+        print(f"  r_200       = {self.r200:.5f} kpc")
+        print(f"  r_s         = {self.rs:.5f} kpc")
         print(f"  rho_s       = {self.rhos:.2e} Msun/kpc^3")
         print()
 
@@ -89,11 +97,15 @@ class NFW:
 
 #  Usage
 if __name__ == "__main__":
-    halo = NFW(M200=1e+5)
+    halo = NFW(M200=1e+8)
     halo.summary()
     print("Dim, freq")
     w= halo.Dimensionless_Frequency(f = 100)
     print(w)
+
+    print("Scaling ratio", halo.scaling_ratio(0.5))
+
+
     x = 69
     m100rs = halo.mass_enclosed_at_xrs(x)
     print(f"Mass enclosed within {x} r_s = {x * halo.rs:.2f} kpc:")

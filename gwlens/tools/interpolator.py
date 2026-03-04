@@ -3,6 +3,7 @@ import argparse
 import os
 import numpy as np
 from gwlens.lens import pointparallel,sis,nfw,powerlaw
+from gwlens.tools import halo
 import matplotlib.pyplot as plt
 
 
