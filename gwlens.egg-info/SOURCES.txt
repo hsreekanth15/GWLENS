@@ -27,4 +27,5 @@ gwlens/tools/executor.py
 gwlens/tools/generate_ini.py
 gwlens/tools/halo.py
 gwlens/tools/interpolator.py
+gwlens/tools/plotting.py
 gwlens/tools/utilities.py
