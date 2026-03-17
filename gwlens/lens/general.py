@@ -51,7 +51,7 @@ def ddfunc(x, w, y,psi,**kwargs):
     term3 = -1j * w / (2 * x) * dfunc(x, w, y,psi,**kwargs)
     return term1 + term2 + term3
 
-def amplification_factor(w, y, psi,**kwargs):
+def Solver_AS(w, y, psi,**kwargs):
     w = mpf(w)
     y = mpf(y)
      

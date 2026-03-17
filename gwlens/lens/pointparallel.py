@@ -4,14 +4,14 @@ import multiprocessing as mp
 import h5py
 import os
 import configparser
-from .point import Point  # Point(w, y) must be available and importable
+from .point import PML  # Point(w, y) must be available and importable
 import logging
 
 
 
 def _worker(args):
     i, j, w, y = args
-    val = Point(w, y)
+    val = PML.Point(w, y)
     return i, j, val.real, val.imag
 
 

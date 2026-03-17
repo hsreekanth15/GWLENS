@@ -1,6 +1,7 @@
 LICENSE
 pyproject.toml
 gwlens/__init__.py
+gwlens/lensing.py
 gwlens.egg-info/PKG-INFO
 gwlens.egg-info/SOURCES.txt
 gwlens.egg-info/dependency_links.txt
@@ -8,6 +9,7 @@ gwlens.egg-info/entry_points.txt
 gwlens.egg-info/requires.txt
 gwlens.egg-info/top_level.txt
 gwlens/lens/__init__.py
+gwlens/lens/base.py
 gwlens/lens/general.py
 gwlens/lens/microlensing.py
 gwlens/lens/nfw.py
