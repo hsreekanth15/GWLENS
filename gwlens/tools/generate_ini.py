@@ -56,6 +56,7 @@ generate_plots = True
 filename = result_point
 lensmodel = point
 n-parallel = 4
+precision = 50
 
 dimensionless_frequency_lower_limit =  0.00001
 dimensionless_frequency_upper_limit =  100

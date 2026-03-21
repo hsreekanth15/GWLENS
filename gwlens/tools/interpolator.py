@@ -2,7 +2,8 @@ import configparser
 import argparse
 import os
 import numpy as np
-from gwlens.lens import pointparallel,sis,nfw,powerlaw
+from mpmath import mp
+from gwlens.lens import point,sis,nfw,powerlaw
 from gwlens.tools import halo
 import matplotlib.pyplot as plt
 
@@ -76,7 +77,8 @@ def interpolate():
         core = float(config['Interpolation']['powerlaw_coreradius'])
         p = float(config['Interpolation']['powerlaw_exponent'])
 
-
+    
+    mp.dps = float(config['Interpolation']['precision'])
 
 
     w = np.linspace(w_lower,w_upper,w_samples)
@@ -85,7 +87,7 @@ def interpolate():
 
     if lensmodel == "point":
         print(f"Lens : {lensmodel}")
-        pointparallel.compute_point_lens_grid(w, y, output_path, num_processes=n_parallel)
+        point.compute_point_lens_grid(w, y, output_path, num_processes=n_parallel)
 
     elif lensmodel == "sis":
         print(f"Lens: {lensmodel}")
