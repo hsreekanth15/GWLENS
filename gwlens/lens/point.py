@@ -42,9 +42,154 @@ class PML(Lens):
         psi_xy = (-2*x1*x2)/r4
 
         return psi_xx, psi_xy, psi_yy
+    
+    def grad_potential(self, x1, x2):
+        r2 = x1**2 + x2**2
+        return x1 / r2, x2 / r2
+    
+    def magnification(self, x1, x2):
+
+        psi_xx, psi_xy, psi_yy = self.hessian_potential(x1, x2)
+
+        A = np.array([
+            [1 - psi_xx, -psi_xy],
+            [-psi_xy, 1 - psi_yy]
+        ])
+
+        detA = np.linalg.det(A)
+
+        return 1.0 / detA
+    
+    def image_type(self, x1, x2):
+
+        psi_xx, psi_xy, psi_yy = self.hessian_potential(x1, x2)
+
+        A = np.array([
+            [1 - psi_xx, -psi_xy],
+            [-psi_xy, 1 - psi_yy]
+        ])
+
+        eigvals = np.linalg.eigvals(A)
+
+        if np.all(eigvals > 0):
+            return "minimum"
+        elif np.all(eigvals < 0):
+            return "maximum"
+        else:
+            return "saddle"
+        
+    def solve_images(self, y1, y2, method="analytic", tol=1e-6):
+        """
+        Solve for image positions, magnifications, and types.
+
+        Parameters
+        ----------
+        y1, y2 : float
+            Source position
+        method : str
+            "analytic", "numeric", or "both"
+        tol : float
+            Tolerance for removing duplicate numerical solutions
+
+        Returns
+        -------
+        results : list of dict
+            Each dict contains:
+                - position: (x1, x2)
+                - magnification: float
+                - type: "minimum" / "saddle" / "maximum"
+                - method: "analytic" or "numeric"
+        """
+
+
+
+        results = []
+
+        # -------------------------
+        # ANALYTICAL SOLUTION
+        # -------------------------
+        if method in ["analytic", "both"]:
+
+            y = np.sqrt(y1**2 + y2**2)
+
+            if y == 0:
+                raise ValueError("Degenerate case: Einstein ring")
+
+            # radial solutions
+            x_plus = 0.5 * (y + np.sqrt(y**2 + 4))
+            x_minus = 0.5 * (y - np.sqrt(y**2 + 4))
+
+            # direction
+            yhat1, yhat2 = y1 / y, y2 / y
+
+            analytic_positions = [
+                (x_plus * yhat1, x_plus * yhat2),
+                (x_minus * yhat1, x_minus * yhat2)
+            ]
+
+            for x1, x2 in analytic_positions:
+                results.append({
+                    "position": (x1, x2),
+                    "magnification": self.magnification(x1, x2),
+                    "type": self.image_type(x1, x2),
+                    "method": "analytic"
+                })
+
+        # -------------------------
+        # NUMERICAL SOLUTION
+        # -------------------------
+        if method in ["numeric", "both"]:
+
+            def lens_eq(x):
+                x1, x2 = x
+                gx, gy = self.grad_potential(x1, x2)
+                return [
+                    x1 - gx - y1,
+                    x2 - gy - y2
+                ]
+
+            guesses = [
+                [y1, y2],
+                [-y1, -y2],
+                [1.0, 0.0],
+                [-1.0, 0.0]
+            ]
+
+            sols = []
+
+            for guess in guesses:
+                sol, info, ier, _ = fsolve(lens_eq, guess, full_output=True)
+
+                if ier == 1:
+                    # remove duplicates
+                    if not any(np.linalg.norm(sol - s) < tol for s in sols):
+                        sols.append(sol)
+
+            for sol in sols:
+                x1, x2 = sol
+                results.append({
+                    "position": (x1, x2),
+                    "magnification": self.magnification(x1, x2),
+                    "type": self.image_type(x1, x2),
+                    "method": "numeric"
+                })
+
+        return results
 
     @staticmethod
     def DimensionlessFrequency(lensmass,f):
+
+        """
+        Computes the dimensionss frequency mentioned in Takahashi 2003
+
+        Parameters:
+
+        lensmass: The mass of the lens in solar units
+        f : Frequency of the gravitational wave source in units of Hz
+
+        Returns: The dimensionless frequency 
+        
+        """
     
         const = 8*np.pi*G/c**3
 
@@ -57,13 +202,17 @@ class PML(Lens):
     def Point_multi(w, x):
         """
         A point mass lens analytical amplification factor from Takahashi(2003). The function is suitable for 
-        microlensing (fixed w and time varyinig impact paramater)
+        microlensing (fixed w and time varyinig impact paramater). A numpy implementation
 
         Parameter :
         w : Dimensionless frequency
         y : Impact parameter
 
-        returns : the magnitude of the amplification factor
+        returns : The complex ampliification factor
+
+        Caveat: The precision is very poor and hence may fail at higher values of w or wy
+        Use Point(w,y) for arbitrary precison to get a better result. 
+        The Evaluation is slover but you will get better result.
         """
         Freal = []
         Fimag = []
@@ -75,8 +224,6 @@ class PML(Lens):
                 xm = (y[j] + np.sqrt(y[j]**2 + 4)) / 2
                 phim = (xm - y[j])**2 / 2 - np.log(xm)
                 expon = np.exp(np.pi * w[i] / 4 + 1j * w[i] / 2 * (np.log(w[i] / 2) - 2 * phim))
-                mp_w = mpmath.mpc(w[i])
-                mp_y = mpmath.mpc(y[j])
                 f = expon * mpmath.gamma(1 - 1j / 2 *w) * hyp1f1(1j / 2 * w, 1, 1j / 2 * w * y**2,100)
                 Freal.append(f.real)
                 Fimag.append(f.imag)   
@@ -84,7 +231,18 @@ class PML(Lens):
 
 
     @staticmethod
-    def Point(w,y):
+    def Point(w,y):  
+        """
+        A arbitrary precision mpmath implementation of the Point Mass Lens Analytical Amplification Factor
+        The precision can be globally set by calling mp.dps from mpmath library.
+        Parameters:
+
+        w: Dimensionless Frequency
+        y: Dimensionless Impact parameter
+
+        Returns : Complex amplification factor of chosen precision.
+
+        """
 
         w = mpc(w)
         y = mpc(y)

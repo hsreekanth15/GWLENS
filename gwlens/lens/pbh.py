@@ -4,12 +4,13 @@
 
 
 import numpy as np
+from .base import Lens
 from astropy import units as u
-from general import Amplification
+from general import amplification
 from mpmath import log,exp
 
 
-class PBH:
+class PBH(Lens):
 
     def __init__(self,m_PBH,f_PBH):
         
@@ -66,6 +67,8 @@ class PBH:
 
 
         return self.point_psi(x) + self.psi_halo(self,x)
+    
+    
 
 
 
