@@ -43,7 +43,7 @@ class PML(Lens):
 
         return psi_xx, psi_xy, psi_yy
 
-
+    @staticmethod
     def DimensionlessFrequency(lensmass,f):
     
         const = 8*np.pi*G/c**3
