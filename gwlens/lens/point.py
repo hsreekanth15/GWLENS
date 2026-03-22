@@ -8,6 +8,7 @@ from mpmath import hyp1f1,exp, mp,sqrt,mpc,pi,log,gamma, besselj
 import logging
 import mpmath
 from astropy.constants import c,G,M_sun
+from scipy.optimize import fsolve
 import configparser
 import time
 import h5py
@@ -32,7 +33,7 @@ class PML(Lens):
         y = np.sqrt(y1**2 + y2**2)
         return 0.5*np.abs(x-y)**2 - self.potential(x)
 
-    def hessian_potential(self, x1, x2):
+    def Hessian(self, x1, x2):
 
         r2 = x1**2 + x2**2
         r4 = r2**2
@@ -47,9 +48,12 @@ class PML(Lens):
         r2 = x1**2 + x2**2
         return x1 / r2, x2 / r2
     
+    def deflection(self, x1, x2):
+       return self.grad_potential(x1, x2)
+    
     def magnification(self, x1, x2):
 
-        psi_xx, psi_xy, psi_yy = self.hessian_potential(x1, x2)
+        psi_xx, psi_xy, psi_yy = self.Hessian(x1, x2)
 
         A = np.array([
             [1 - psi_xx, -psi_xy],
@@ -60,9 +64,19 @@ class PML(Lens):
 
         return 1.0 / detA
     
+    def Image_count(self):
+        """
+        Total image count is fixed ( 2 images- Minimum and Saddle) for PML model.
+        But it can also be calculated directly from the method
+        solve_images. The number of independent solutions correspond to number of images.
+        
+        """
+
+        return 2.0
+    
     def image_type(self, x1, x2):
 
-        psi_xx, psi_xy, psi_yy = self.hessian_potential(x1, x2)
+        psi_xx, psi_xy, psi_yy = self.Hessian(x1, x2)
 
         A = np.array([
             [1 - psi_xx, -psi_xy],
@@ -72,13 +86,14 @@ class PML(Lens):
         eigvals = np.linalg.eigvals(A)
 
         if np.all(eigvals > 0):
-            return "minimum"
+            return {"type":"minimum", "Morse": 0}
         elif np.all(eigvals < 0):
-            return "maximum"
+            return {"type": "maximum", "morse": 2}
         else:
-            return "saddle"
+            return {"type": "saddle","morse":1}
         
-    def solve_images(self, y1, y2, method="analytic", tol=1e-6):
+
+    def solve_images(self,y1, y2, method="analytic", tol=1e-6):
         """
         Solve for image positions, magnifications, and types.
 
@@ -167,17 +182,19 @@ class PML(Lens):
 
             for sol in sols:
                 x1, x2 = sol
+                info = self.image_type(x1, x2)
                 results.append({
                     "position": (x1, x2),
                     "magnification": self.magnification(x1, x2),
-                    "type": self.image_type(x1, x2),
+                    "type": info["type"],
+                    "morse":info["morse"]
                     "method": "numeric"
                 })
 
         return results
 
-    @staticmethod
-    def DimensionlessFrequency(lensmass,f):
+   
+    def Dimensionless_Frequency(lensmass,f):
 
         """
         Computes the dimensionss frequency mentioned in Takahashi 2003
