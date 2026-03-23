@@ -86,6 +86,28 @@ def Solver_AS(w, y, psi,**kwargs):
     ampfac= -1j * w * exp(0.5 * 1j * w * y**2) * zz_val
     return complex(round(ampfac.real, 6), round(ampfac.imag, 6))
 
+def solver_go(frequencies, mu, td, n):
+    """
+    Computes the geometrical optics amplification :math:`F(f)` over a frequency band, given a set of magnifications, time delays and Morse indices
+    
+    :param frequencies: frequency band for the computation of the amplification factor
+    :type frequencies: array
+    :param mu: images magnifications
+    :type mu: indexable object
+    :param td: images time delays
+    :type td: indexable object
+    :param n: Morse indices
+    :type n: indexable object
+    
+    :returns: :math:`F(f)`
+    :rtype: array
+    """
+    
+    Fmag = np.zeros(len(frequencies), dtype=np.complex128)
+    for i in range(len(mu)):
+        Fmag += np.sqrt(np.abs(mu[i]))* np.exp(1j*np.pi*(1.*frequencies*td[i] - n[i]))
+    return Fmag    
+
 
 def amplification(w_values,y_values,psi,num_processes=4,**kwargs):
 

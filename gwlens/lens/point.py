@@ -88,9 +88,9 @@ class PML(Lens):
         if np.all(eigvals > 0):
             return {"type":"minimum", "Morse": 0}
         elif np.all(eigvals < 0):
-            return {"type": "maximum", "morse": 2}
+            return {"type": "maximum", "Morse": 2}
         else:
-            return {"type": "saddle","morse":1}
+            return {"type": "saddle","Morse":1}
         
 
     def solve_images(self,y1, y2, method="analytic", tol=1e-6):
@@ -143,10 +143,12 @@ class PML(Lens):
             ]
 
             for x1, x2 in analytic_positions:
+                info = self.image_type(x1, x2)
                 results.append({
                     "position": (x1, x2),
                     "magnification": self.magnification(x1, x2),
-                    "type": self.image_type(x1, x2),
+                    "type": info["type"],
+                    "Morse": info["Morse"],
                     "method": "analytic"
                 })
 
@@ -187,13 +189,13 @@ class PML(Lens):
                     "position": (x1, x2),
                     "magnification": self.magnification(x1, x2),
                     "type": info["type"],
-                    "morse":info["morse"]
+                    "Morse": info["Morse"],
                     "method": "numeric"
                 })
 
         return results
 
-   
+    @staticmethod
     def Dimensionless_Frequency(lensmass,f):
 
         """
