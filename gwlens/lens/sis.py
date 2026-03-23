@@ -5,10 +5,26 @@ import h5py
 import os
 import configparser
 import logging
+from .base import Lens
 from mpmath import mp, mpc, exp, pi, gamma, factorial, hyp1f1, nstr
 
 # Set desired decimal precision (increase if needed)
 mp.dps = 50  # digits of precision
+
+
+class SIS(Lens):
+    def potential(self,x):
+        return np.sqrt(x1**2 + x2**2)
+    
+    def time_delay(self,x1,x2,y1,y2):
+        return 
+    
+    def Hessian(self, x1, x2):
+        return 
+    
+    def Dimensionless_Frequency(self):
+        return super().Dimensionless_Frequency()
+
 
 def calculate_F(w, y, n_lim, epsilon=1e-30):
     # Convert inputs to mpmath-compatible complex numbers

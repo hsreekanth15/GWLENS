@@ -215,7 +215,46 @@ class PML(Lens):
         w = const*lensmass*M_sun*f
 
         return w
+    
+    @staticmethod
+    def Analytical_Magnification(y, type="both"):
+        """
+        Calculates the Point Mass Lens analytical magnification for both images
 
+        parameters:
+
+        y: Impact paraemeter of the lens
+        type: nature of the image: minimum, saddle and maximum
+        """
+        term = (y**2 +2)/(2*y*np.sqrt(y**2 + 4))
+        mu_plus = 0.5+term
+        mu_minus = 0.5-term
+        
+        mapping = {
+            "minimum": mu_plus,
+            "saddle":mu_minus,
+            "both": (mu_plus,mu_minus),
+        }
+        
+        try:
+            return mapping[type]
+        except KeyError:
+            raise ValueError(f"Invalid type '{type}'. Expected one of {list(mapping.keys())}") 
+        
+    @staticmethod
+    def Point_GO(w,y,type="both"):
+        """
+        Computes geometric optics amplification factor for Point Mass Lens
+
+        Parameters:
+        
+        w: Dimensionless frequency
+        y: Impact parameter
+
+        type: Nature of the image: minimum, saddle, both
+
+        """
+        return #Call a general function from general.py
 
 
     def Point_multi(w, x):
