@@ -13,13 +13,11 @@ import configparser
 import time
 import h5py
 from .base import Lens
+from gwlens.lens import solver
 
 mp.dps= 60
 
-#Define constants   
-c = c.value
-G = G.value
-M_sun = M_sun.value
+
 
 
 
@@ -28,10 +26,10 @@ class PML(Lens):
     def potential(self,x):
         return np.log(np.abs(x))
 
-    def time_delay(self,x1,x2,y1,y2):
+    def Fermat_Potential(self,x1,x2,y1,y2):
         x = np.sqrt(x1**2 + x2**2)
-        y = np.sqrt(y1**2 + y2**2)
-        return 0.5*np.abs(x-y)**2 - self.potential(x)
+        
+        return 0.5* ( (x1-y1)**2 + (x2-y2)**2) - self.potential(x)
 
     def Hessian(self, x1, x2):
 
@@ -63,6 +61,28 @@ class PML(Lens):
         detA = np.linalg.det(A)
 
         return 1.0 / detA
+    
+    def Time_Delay(self,y1, y2, Ml):
+
+        """
+        
+        Computes the physical timedelay between images
+
+        Returns: timedelay between signals in seconds
+
+        """
+
+        prefactor = 4*G*Ml*M_sun/c**3
+
+        sol = self.solve_images(y1,y2,method="analytic")
+        td = []
+        for img in sol:
+            dimensionlenss_td = img["dimensionless_time_delay"]
+            img["timedelay"] = prefactor*dimensionlenss_td
+            td.append(img["timedelay"])
+
+        return td
+ 
     
     def Image_count(self):
         """
@@ -193,7 +213,47 @@ class PML(Lens):
                     "method": "numeric"
                 })
 
+        # compute Fermat potential for each image
+        for img in results:
+            x1, x2 = img["position"]
+            phi = self.Fermat_Potential(x1, x2, y1, y2)
+            img["fermat_potential"] = phi
+
+        # find minimum (first arrival)
+        phi_min = min(img["fermat_potential"] for img in results)
+
+        # compute relative delays
+        for img in results:
+            img["dimensionless_time_delay"] = img["fermat_potential"] - phi_min
+            
+
+              
+
         return results
+    
+    def dimensionless_time_delay(self, y1, y2, method="analytic"):
+        """
+        Compute relative time delays between images.
+        First arriving image is normalized to 0.
+        """
+
+        images = self.solve_images(y1, y2, method=method)
+
+        # compute Fermat potential for each image
+        for img in images:
+            x1, x2 = img["position"]
+            phi = self.Fermat_Potential(x1, x2, y1, y2)
+            img["fermat_potential"] = phi
+
+        # find minimum (first arrival)
+        phi_min = min(img["fermat_potential"] for img in images)
+
+        # compute relative delays
+        for img in images:
+            img["dimensionless_time_delay"] = img["fermat_potential"] - phi_min
+
+        return images
+
 
     @staticmethod
     def Dimensionless_Frequency(lensmass,f):
@@ -241,8 +301,8 @@ class PML(Lens):
         except KeyError:
             raise ValueError(f"Invalid type '{type}'. Expected one of {list(mapping.keys())}") 
         
-    @staticmethod
-    def Point_GO(w,y,type="both"):
+    
+    def Amplification(self,w,y,type="both"):
         """
         Computes geometric optics amplification factor for Point Mass Lens
 
@@ -254,9 +314,31 @@ class PML(Lens):
         type: Nature of the image: minimum, saddle, both
 
         """
-        return #Call a general function from general.py
+
+        
+        y1 = y
+        y2 = 0
+
+        sol = self.solve_images(y1,y2, method="analytic")
+
+        mu = []
+        td = []
+        n = []
+        
+        for img in sol:
+            mag = img["magnification"]
+            dimensionless_td = img["dimensionless_time_delay"]
+            MorseIndex = img["Morse"]
+            mu.append(mag)
+            td.append(dimensionless_td)
+            n.append(MorseIndex)
+
+        #magnification = self.Analytical_Magnification(y,type=type)
 
 
+        return solver.GO(w,td,mu,n)
+
+    @staticmethod
     def Point_multi(w, x):
         """
         A point mass lens analytical amplification factor from Takahashi(2003). The function is suitable for 
@@ -315,8 +397,6 @@ class PML(Lens):
         return f
 
 
-
-    
     def psi(x):
         
         return log(x)

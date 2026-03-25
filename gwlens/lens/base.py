@@ -21,15 +21,15 @@ class Lens(ABC):
         pass
 
     @abstractmethod
-    def time_delay(self,x1,x2):
+    def Fermat_Potential(self,x1,x2):
+        pass
+
+    @abstractmethod
+    def Time_Delay(self,x1,x2,y1,y2):
         pass
 
     @abstractmethod
     def deflection(self,x):
-        pass
-
-    @abstractmethod
-    def Image_count(self):
         pass
 
     @abstractmethod
@@ -39,3 +39,24 @@ class Lens(ABC):
     @abstractmethod
     def Dimensionless_Frequency(self):
         pass
+
+    @abstractmethod
+    def solve_images(self, y1, y2, method="analytic"):
+        pass
+
+
+    def dimensionless_time_delay(self, y1, y2, method="analytic"):
+
+        images = self.solve_images(y1, y2, method=method)
+
+        for img in images:
+            x1, x2 = img["position"]
+            phi = self.Fermat_Potential(x1, x2, y1, y2)
+            img["fermat_potential"] = phi
+
+        phi_min = min(img["fermat_potential"] for img in images)
+
+        for img in images:
+            img["time_delay"] = img["fermat_potential"] - phi_min
+
+        return images

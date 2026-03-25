@@ -6,7 +6,7 @@
 import numpy as np
 from .base import Lens
 from astropy import units as u
-from general import amplification
+from gwlens.lens.solver import amplification
 from mpmath import log,exp
 
 
