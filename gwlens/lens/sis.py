@@ -25,9 +25,6 @@ class SIS(Lens):
         
         return 0.5* ( (x1-y1)**2 + (x2-y2)**2) - self.potential(x)
     
-    def time_delay(self,x1,x2,y1,y2):
-        return 
-    
     def Hessian(self, x1, x2):
 
         r2 = x1**2 + x2**2
@@ -74,7 +71,6 @@ class SIS(Lens):
         DLS        = cosmo.angular_diameter_distance_z1z2(zL, zS)
         D          = (DL*DLS)/DS
         
-        print(D)
         Deff = D.to(u.km)
         sigma = sigma* (u.km/u.s)
         c = 3e+5 * (u.km/u.s) # in km/s

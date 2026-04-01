@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gwlens"
-version = "0.1"
+version = "0.1.1a1"
 description = "Gravitational lensing CLI"
 dependencies = ["numpy",
 "scipy",
