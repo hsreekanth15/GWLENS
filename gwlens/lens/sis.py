@@ -278,7 +278,7 @@ class SIS(Lens):
 
         return results
     
-    def sample(N=10000,y_max=2.0,y_min=1e-3,sigma_v_range=(150, 300), z_l=0.5,z_s=2.0,seed=None):
+    def sample(self,N=10000,y_max=2.0,y_min=1e-3,sigma_v_range=(150, 300), zL=0.5,zS=2.0,seed=None):
         """
         Sample SIS lensing observables.
 
@@ -294,8 +294,8 @@ class SIS(Lens):
         rng = np.random.default_rng(seed)
 
         # --- 1. Sample impact parameter (uniform in area → p(y) ∝ y)
-        u = rng.random(N)
-        y = np.sqrt(u) * y_max
+        rand = rng.random(N)
+        y = np.sqrt(rand) * y_max
         y = np.clip(y, y_min, None)
 
         # --- 2. Image positions
@@ -319,14 +319,19 @@ class SIS(Lens):
         phi1 = fermat(x1, y)
         phi2 = fermat(x2, y)
 
-        delta_phi = phi1 - phi2   # dimensionless time delay
+        delta_phi = phi2 - phi1   # dimensionless time delay
 
         # --- 5. Sample velocity dispersion
         sigma_v = rng.uniform(sigma_v_range[0], sigma_v_range[1], N)
 
+        G_new = G.to(u.km**3 / (u.M_sun * u.s**2)) 
+        c = 3e+5 * (u.km/u.s)
+
+        prefactor = 4*G_new*self.Effective_Lens_Mass(sigma_v,zL,zS)/(c**3)
+
         # --- 6. Physical scaling of time delay
         # Δt ∝ (σ_v^4) * Δφ   (SIS scaling)
-        delta_t = (sigma_v / 200.0)**4 * delta_phi
+        delta_t = prefactor*delta_phi
 
         return {
             "y": y,
