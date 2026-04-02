@@ -1,4 +1,4 @@
-from general import amplification
+from gwlens.lens.solver import amplification
 from mpmath import log,mp
 import numpy as np
 import time

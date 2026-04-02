@@ -277,7 +277,68 @@ class SIS(Lens):
             img["dimensionless_time_delay"] = img["fermat_potential"] - phi_min
 
         return results
-        
+    
+    def sample(N=10000,y_max=2.0,y_min=1e-3,sigma_v_range=(150, 300), z_l=0.5,z_s=2.0,seed=None):
+        """
+        Sample SIS lensing observables.
+
+        Returns:
+            dict with:
+                y              : impact parameter
+                mu1, mu2       : magnifications
+                x1, x2         : image positions
+                delta_t        : time delay (arbitrary units)
+                sigma_v        : velocity dispersion
+        """
+
+        rng = np.random.default_rng(seed)
+
+        # --- 1. Sample impact parameter (uniform in area → p(y) ∝ y)
+        u = rng.random(N)
+        y = np.sqrt(u) * y_max
+        y = np.clip(y, y_min, None)
+
+        # --- 2. Image positions
+        x1 = y + 1.0
+        x2 = y - 1.0   # negative side
+
+        # --- 3. Magnifications
+        mu1 = 1.0 + 1.0 / y
+        mu2 = 1.0 - 1.0 / y
+
+        # signed magnification for image 2 (can be negative parity)
+        mu2_signed = mu2
+
+        # absolute magnification (what you often use observationally)
+        mu2_abs = np.abs(mu2)
+
+        # --- 4. Fermat potential (dimensionless)
+        def fermat(x, y):
+            return 0.5 * (x - y)**2 - np.abs(x)
+
+        phi1 = fermat(x1, y)
+        phi2 = fermat(x2, y)
+
+        delta_phi = phi1 - phi2   # dimensionless time delay
+
+        # --- 5. Sample velocity dispersion
+        sigma_v = rng.uniform(sigma_v_range[0], sigma_v_range[1], N)
+
+        # --- 6. Physical scaling of time delay
+        # Δt ∝ (σ_v^4) * Δφ   (SIS scaling)
+        delta_t = (sigma_v / 200.0)**4 * delta_phi
+
+        return {
+            "y": y,
+            "x1": x1,
+            "x2": x2,
+            "mu1": mu1,
+            "mu2_signed": mu2_signed,
+            "mu2_abs": mu2_abs,
+            "delta_t": delta_t,
+            "sigma_v": sigma_v
+        }
+            
     def Amplification(self,w,y,type="both"):
         """
         Computes geometric optics amplification factor for Point Mass Lens
