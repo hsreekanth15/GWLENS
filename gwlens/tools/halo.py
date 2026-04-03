@@ -1,35 +1,40 @@
 import numpy as np
+from astropy import units as u
+from astropy.constants import G,c
 
 class NFW:
     """
     Class to represent an NFW halo and compute related quantities.
     All distances in kpc, masses in solar masses to be consistent with CW analysis.
     """
-    def __init__(self, M200, H0=70.0):
+    def __init__(self, M200, H0=70.0,zl= 0):
         """
         Parameters:
         - M200: Virial mass in solar masses (e.g. 1e14)
         - c: concentration parameter (e.g. 5)
         - H0: Hubble constant in km/s/Mpc (default 70)
+        - Redshift of the lens
         """
-        self.M200 = M200
-        self.c = self.concentration_parameter()
-        self.H0 = H0  # in km/s/Mpc
-        self.G = 4.302e-6  # Gravitational constant in (kpc * km^2) / (s^2 * Msun)
-
+        self.M200 = M200 * u.Msun
+        self.zl = zl
+        self.cp = self.concentration_parameter()
+        self.H0 = H0 * (u.km/u.s/u.Mpc)
+        #self.G = 4.302e-6  # Gravitational constant in (kpc * km^2) / (s^2 * Msun)
+        self.G = G.to(u.kpc * (u.km/u.s)**2  /u.Msun)
+        self.c = c.to(u.km/u.s)
         self.rho_c = self.compute_critical_density()
         self.r200 = self.compute_r200()
-        self.rs = self.r200 / self.c
+        self.rs = self.r200 / self.cp
         self.rhos = self.compute_rhos()
 
-    def concentration_parameter(self,zl=0, h= 0.7):
-        term = (self.M200*h/(1e+14))**(-0.13)
-        return 8/(1+zl) * term
+    def concentration_parameter(self, h= 0.7):
+        term = (self.M200/(1e+14 * u.Msun) * h)**(-0.13)
+        return 8/(1+self.zl) * term
 
     def compute_critical_density(self):
         """Compute critical density of the Universe at z = 0 (in Msun/kpc^3)"""
-        H0_kpc = self.H0 / 1000  # Convert to km/s/kpc
-        rho_c = 3 * H0_kpc**2 / (8 * np.pi * self.G)
+        #H0_kpc = self.H0 / 1000  # Convert to km/s/kpc
+        rho_c = (3 * self.H0**2 / (8 * np.pi * self.G)).to(u.Msun/u.kpc**3)
         return rho_c
 
     def compute_r200(self):
@@ -38,17 +43,18 @@ class NFW:
 
     def compute_rhos(self):
         """Compute the NFW scale density rho_s (in Msun/kpc^3)"""
-        f_c = np.log(1 + self.c) - self.c / (1 + self.c)
-        return (200 / 3) * self.rho_c * (self.c**3) / f_c
+        f_c = np.log(1 + self.cp) - self.cp / (1 + self.cp)
+        return (200 / 3) * self.rho_c * (self.cp**3) / f_c
 
     def mass_enclosed(self, r):
         """
         Compute enclosed mass at radius r (in kpc)
         Returns: Mass in Msun
         """
+        r = r.to(self.rs.unit)
         x = r / self.rs
         f_x = np.log(1 + x) - x / (1 + x)
-        return 4 * np.pi * self.rhos * self.rs**3 * f_x
+        return (4 * np.pi * self.rhos * self.rs**3 * f_x).to(u.Msun)
 
     def mass_enclosed_at_xrs(self, x):
         """
@@ -70,7 +76,11 @@ class NFW:
 
         """
 
-        return 3.71e-4 * self.mass_enclosed(self.rs)*f
+        M = self.mass_enclosed(self.rs)
+        
+        f = f*(1/u.s)
+
+        return (24*np.pi*self.G*M*f/self.c**3).decompose()
 
     def scaling_ratio(self,D):
 
@@ -78,18 +88,21 @@ class NFW:
         The ratio used in GLoW to produce u.
         
         """
-        return 2.4e-8 * np.sqrt(self.mass_enclosed(self.rs)*D)/self.rs
+
+        Deff = D*(u.kpc)
+        constant = 12* self.G/self.c**2
+        return  np.sqrt(constant*self.mass_enclosed(self.rs)*Deff)/self.rs
 
     
 
     def summary(self):
         print(f"NFW Halo Summary:")
-        print(f"  M_200       = {self.M200:.2e} Msun")
-        print(f"  c           = {self.c}")
-        print(f"  H_0         = {self.H0} km/s/Mpc")
-        print(f"  rho_c       = {self.rho_c:.5f} Msun/kpc^3")
-        print(f"  r_200       = {self.r200:.5f} kpc")
-        print(f"  r_s         = {self.rs:.5f} kpc")
+        print(f"  M_200       = {self.M200:.2e} ")
+        print(f"  c           = {self.cp}")
+        print(f"  H_0         = {self.H0} ")
+        print(f"  rho_c       = {self.rho_c:.5f} ")
+        print(f"  r_200       = {self.r200:.5f}")
+        print(f"  r_s         = {self.rs:.5f} ")
         print(f"  rho_s       = {self.rhos:.2e} Msun/kpc^3")
         print()
 
@@ -97,17 +110,17 @@ class NFW:
 
 #  Usage
 if __name__ == "__main__":
-    halo = NFW(M200=1e+8)
+    halo = NFW(M200=1e+6)
     halo.summary()
-    print("Dim, freq")
-    w= halo.Dimensionless_Frequency(f = 100)
+    print("Dim. freq")
+    w= halo.Dimensionless_Frequency(f = 1)
     print(w)
 
     print("Scaling ratio", halo.scaling_ratio(0.5))
 
 
-    x = 69
-    m100rs = halo.mass_enclosed_at_xrs(x)
+    x = 1
+    m100rs = halo.mass_enclosed_at_xrs(x) 
     print(f"Mass enclosed within {x} r_s = {x * halo.rs:.2f} kpc:")
     print(f"  M(<{x} r_s) = {m100rs:.2e} Msun")
 
