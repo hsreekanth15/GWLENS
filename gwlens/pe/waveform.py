@@ -2,10 +2,27 @@ from bilby.gw.source import lal_binary_black_hole
 from scipy.constants import c,G
 import numpy as np
 import h5py
+import configparser
+import os
 from scipy.interpolate import RectBivariateSpline
 from astropy import units as u
 Msun = 1.988e+30
 constant = (8*np.pi*G/c**3)*Msun
+
+
+#### To implement
+
+# Make the lensed waveform model-independent
+# The lens specifi dimensionless frequencies should be called from lens folder and the corresponding modules there
+# Should allow for arbitrary kwargs as different lenses have different number of parameters.
+
+##  Implement a CLI for inference -> Read the .ini file -> Get the lens_name and lookup_table path -> 
+## The CLI entry point could be named as gwlens_pipe_analysis *.ini
+
+
+
+
+
 
 def SIS_DimensionlessFrequency(f,sigma_v,Dl,Ds):
 
