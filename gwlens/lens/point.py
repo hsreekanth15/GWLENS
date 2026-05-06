@@ -398,6 +398,9 @@ class PML(Lens):
 
 
     def psi(x):
+        """
+        Arbitrary precision mpmath version of the lensing potential
+        """
         
         return log(x)
         

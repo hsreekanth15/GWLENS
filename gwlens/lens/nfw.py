@@ -5,6 +5,10 @@ import h5py
 import os
 import configparser
 import logging
+from .base import Lens
+from gwlens.lens import solver
+from scipy.optimize import fsolve
+from astropy.constants import c,G,M_sun
 from joblib import Parallel, delayed
 from mpmath import mp,mpf, mpc, sqrt, exp, besselj, quad,log, atan,atanh
 
@@ -22,6 +26,476 @@ if not logger.handlers:
 
 mp.dps = 200  # set precision to 50 decimal places (arbitrary precision)
 eps = 1e-3  # relative accuracy tolerance
+
+
+class NFW1(Lens):
+    """
+    Navarro Frenk White Class, a class inherited from the base class Lens
+    """
+    def potential(self,rs, x):
+        scale_radius = rs
+        u = scale_radius*x
+
+        if u <= 1:
+            return 0.5*(  (np.log(u/2))**2 - (np.arctanh(np.sqrt(1-u**2)))**2 )
+        else:
+            return 0.5*( (np.log(u/2))**2 + (np.arctan(np.sqrt(u**2 -1)))**2   )
+        
+    def grad_potential(self, x1, x2, rs):
+        """
+        Gradient of the NFW lensing potential (= deflection angle vector).
+
+        For a circularly-symmetric lens:
+            ∇ψ = α(r)/r · (x1, x2)
+
+        where the scalar deflection angle is:
+            α(r) = (1/r) · [ln(u/2) + h(u)],   u = rs·r
+
+        The returned components are:
+            ∂ψ/∂x1 = α(r)/r · x1
+            ∂ψ/∂x2 = α(r)/r · x2
+        """
+        r = np.sqrt(x1**2 + x2**2)
+        u = rs * r
+
+        h = self._h(u)                             # atanh / atan branch
+
+        # α(r)/r — avoids a separate division by r
+        alpha_over_r = (np.log(u / 2.0) + h) / r**2
+
+        return alpha_over_r * x1, alpha_over_r * x2
+    
+
+    def deflection(self, x1, x2, rs):
+        """
+        NFW deflection angle vector  α = ∇ψ.
+
+        For a circularly-symmetric lens the deflection points radially:
+
+            α₁ = α(r)/r · x1,   α₂ = α(r)/r · x2
+
+        where the scalar deflection magnitude is:
+
+            α(r) = (1/r) · [ln(u/2) + h(u)],   u = rs · r
+
+        This is identical to grad_potential — the deflection angle IS
+        the gradient of the lensing potential.
+
+        Parameters
+        ----------
+        x1, x2 : float  – image-plane coordinates
+        rs     : float  – dimensionless NFW scale radius
+
+        Returns
+        -------
+        alpha1, alpha2 : float  – deflection angle components
+        """
+        return self.grad_potential(x1, x2, rs)  
+    
+    def Time_Delay(self,y1, y2,rs, Ml):
+
+        """
+        
+        Computes the physical timedelay between images
+
+        Returns: timedelay between signals in seconds
+
+        """
+
+        prefactor = 12*G*Ml*M_sun/c**3
+
+        sol = self.solve_images(y1,y2,rs,method="numeric")
+        td = []
+        for img in sol:
+            dimensionlenss_td = img["dimensionless_time_delay"]
+            img["timedelay"] = prefactor*dimensionlenss_td
+            td.append(img["timedelay"])
+
+        return td
+ 
+
+    def Fermat_Potential(self,x1,x2,y1,y2,rs):
+        x = np.sqrt(x1**2 + x2**2)
+        
+        return 0.5* ( (x1-y1)**2 + (x2-y2)**2) - self.potential(rs,x)
+    def _h(self, u):
+        """
+        Auxiliary angular function h(u) that appears in deflection and
+        mean-convergence expressions.
+            h(u) = arctanh(sqrt(1-u²)) / sqrt(1-u²)   for u < 1
+            h(u) = 1                                    for u = 1
+            h(u) = arctan(sqrt(u²-1))  / sqrt(u²-1)   for u > 1
+        """
+        if abs(u - 1.0) < 1e-7:
+            return 1.0
+        elif u < 1.0:
+            return np.arctanh(np.sqrt(1.0 - u**2)) / np.sqrt(1.0 - u**2)
+        else:
+            return np.arctan(np.sqrt(u**2 - 1.0)) / np.sqrt(u**2 - 1.0)
+    def _convergence(self, r, rs):
+        """
+        NFW convergence (surface-mass density in units of Σ_cr):
+            κ(r) = (rs²/2) · [1/(u²-1) + h(u)/(1-u²)]   u < 1
+            κ(r) = rs² / 6                                 u = 1  (analytic limit)
+            κ(r) = (rs²/2) · [1/(u²-1) - h(u)/(u²-1)]   u > 1
+
+        Derived by applying the 2-D Poisson equation to the NFW
+        potential: κ = (1/2r) d(r·α)/dr.
+        """
+        u = rs * r
+
+        if abs(u - 1.0) < 1e-7:              # analytic limit  u → 1
+            return rs**2 / 6.0
+
+        elif u < 1.0:
+            # 1/(u²-1) is negative here; atanh term compensates → κ > 0
+            return (rs**2 / 2.0) * (
+                1.0 / (u**2 - 1.0)
+                + np.arctanh(np.sqrt(1.0 - u**2)) / (1.0 - u**2)**1.5
+            )
+        else:
+            return (rs**2 / 2.0) * (
+                1.0 / (u**2 - 1.0)
+                - np.arctan(np.sqrt(u**2 - 1.0)) / (u**2 - 1.0)**1.5
+            )
+    def _mean_convergence(self, r, rs):
+        """
+        Mean convergence within projected radius r:
+            κ̄(r) = α(r)/r = (1/r²) · [ln(u/2) + h(u)]
+
+        This equals twice the enclosed projected mass divided by π r²
+        (in units of Σ_cr), and is directly the deflection angle α = κ̄·r.
+        """
+        u = rs * r
+        return (1.0 / r**2) * (np.log(u / 2.0) + self._h(u))
+
+
+    def Hessian(self, x1, x2, rs):
+        """
+        Second derivatives of the NFW lensing potential ψ(x1, x2).
+
+        For a circularly-symmetric lens the Hessian decomposes as:
+            ψ_xx = κ + γ cos2φ
+            ψ_yy = κ − γ cos2φ        cos2φ = (x1²−x2²)/r²
+            ψ_xy =     γ sin2φ         sin2φ = 2 x1 x2 / r²
+
+        where the shear magnitude is  γ = κ̄(r) − κ(r).
+
+        Parameters
+        ----------
+        x1, x2 : float  – lens-plane coordinates
+        rs      : float  – dimensionless NFW scale radius
+
+        Returns
+        -------
+        psi_xx, psi_xy, psi_yy : float
+        """
+        r = np.sqrt(x1**2 + x2**2)
+
+        kappa   = self._convergence(r, rs)        # local convergence
+        kappa_bar = self._mean_convergence(r, rs) # mean convergence
+        gamma   = kappa_bar - kappa               # shear magnitude
+
+        r2 = r**2
+        cos2phi = (x1**2 - x2**2) / r2           # = cos(2φ)
+        sin2phi = 2.0 * x1 * x2 / r2             # = sin(2φ)
+
+        psi_xx = kappa + gamma * cos2phi
+        psi_yy = kappa - gamma * cos2phi
+        psi_xy = gamma * sin2phi
+
+        return psi_xx, psi_xy, psi_yy
+    def image_type(self, x1, x2, rs):
+        """
+        Classify an image position using the eigenvalues of the lensing
+        Jacobian  A = I − ∇∇ψ.
+
+        Morse index n:
+            n = 0   → minimum   (both eigenvalues of A > 0, det A > 0, tr A > 0)
+            n = 1/2 → saddle    (det A < 0  ↔  one eigenvalue negative)
+            n = 1   → maximum   (both eigenvalues < 0, det A > 0, tr A < 0)
+                      (rare for NFW since there is no central core)
+        """
+        psi_xx, psi_xy, psi_yy = self.Hessian(x1, x2, rs)
+
+        A = np.array([
+            [1.0 - psi_xx, -psi_xy],
+            [-psi_xy,       1.0 - psi_yy]
+        ])
+        eigvals = np.linalg.eigvalsh(A)   # always real for symmetric A
+
+        if eigvals[0] * eigvals[1] < 0.0:
+            return {"type": "saddle",   "Morse": 0.5}
+        elif eigvals[0] > 0.0:
+            return {"type": "minimum",  "Morse": 0}
+        else:
+            return {"type": "maximum",  "Morse": 1}
+    
+    def _nfw_guesses(self, y1, y2, rs):
+        """
+        Build a set of starting points for fsolve that covers where NFW
+        images actually form.
+
+        NFW images lie:
+          • Along the source azimuth φ_s  (same side, larger r)
+          • Opposite  azimuth φ_s + π     (counter-image, smaller r)
+          • Near the tangential critical curve  r ~ 1/rs  (Einstein ring scale)
+
+        Strategy: radial grid in both directions × angular perturbations.
+        """
+        y     = np.hypot(y1, y2)
+        phi_s = np.arctan2(y2, y1) if y > 1e-8 else 0.0
+
+        # Characteristic radii:  0.2 … 5 × θ_E  (θ_E ~ 1/rs in these units)
+        r_scale = 1.0 / rs if rs > 0 else 1.0
+        radii   = r_scale * np.array([0.1, 0.3, 0.6, 1.0, 1.5, 2.5, 4.0])
+
+        guesses = []
+
+        # Along and opposite the source direction (NFW main images)
+        for r in radii:
+            for dphi in [0.0, np.pi]:
+                phi = phi_s + dphi
+                guesses.append([r * np.cos(phi), r * np.sin(phi)])
+
+        # Tangential arc: ring at r_scale with 8 equally-spaced angles
+        for phi in np.linspace(0, 2 * np.pi, 8, endpoint=False):
+            guesses.append([r_scale * np.cos(phi), r_scale * np.sin(phi)])
+
+        # Slight off-axis nudges (helps for nearly-aligned configurations)
+        if y > 1e-8:
+            for sign in [+1.0, -1.0]:
+                guesses.append([y1 + sign * 0.5, y2])
+                guesses.append([y1,               y2 + sign * 0.5])
+
+        return guesses
+    
+
+    def solve_images(self, y1, y2, rs, method="numeric", tol=1e-6):
+        """
+        Solve for NFW image positions, magnifications, Morse indices,
+        and dimensionless time delays.
+
+        Parameters
+        ----------
+        y1, y2 : float  – source position (lens-plane units)
+        rs     : float  – dimensionless NFW scale radius
+        method : str    – only "numeric" is meaningful for NFW
+                          (no closed-form image positions exist)
+        tol    : float  – duplicate-removal threshold in the image plane
+
+        Returns
+        -------
+        results : list of dict, each containing:
+            position               – (x1, x2)
+            magnification          – float (signed)
+            type                   – "minimum" / "saddle" / "maximum"
+            Morse                  – 0 / 0.5 / 1
+            fermat_potential       – φ(x) = (x-y)²/2 − ψ(x)
+            dimensionless_time_delay – φ(x) − φ_min
+            method                 – "numeric"
+        """
+        results = []
+
+        # ── lens equation: x − ∇ψ(x) = y ───────────────────────────────
+        def lens_eq(x):
+            gx, gy = self.grad_potential(x[0], x[1], rs)  # <-- rs threaded
+            return [x[0] - gx - y1,
+                    x[1] - gy - y2]
+
+        # ── collect unique, well-converged roots ─────────────────────────
+        found = []      
+
+        for guess in self._nfw_guesses(y1, y2, rs):
+            try:
+                sol, _, ier, _ = fsolve(lens_eq, guess, full_output=True)
+            except Exception:
+                continue
+
+            if ier != 1:                               # fsolve did not converge
+                continue
+
+            residual = np.max(np.abs(lens_eq(sol)))
+            if residual > np.sqrt(tol):                # converged to a non-root
+                continue
+
+            if any(np.linalg.norm(sol - s) < tol for s in found):  # duplicate
+                continue
+
+            found.append(sol)
+
+        # ── classify each image ──────────────────────────────────────────
+        for sol in found:
+            x1, x2 = sol
+            itype = self.image_type(x1, x2, rs)       # <-- rs threaded
+            results.append({
+                "position":      (x1, x2),
+                "magnification": self.magnification(x1, x2, rs),  # <-- rs
+                "type":          itype["type"],
+                "Morse":         itype["Morse"],
+                "method":        "numeric",
+            })
+
+        # ── Fermat potential & relative time delays ──────────────────────
+        for img in results:
+            x1, x2 = img["position"]
+            img["fermat_potential"] = self.Fermat_Potential(x1, x2, y1, y2, rs)  # <-- rs
+
+        if results:
+            phi_min = min(img["fermat_potential"] for img in results)
+            for img in results:
+                img["dimensionless_time_delay"] = img["fermat_potential"] - phi_min
+
+        return results
+
+
+    def magnification(self, x1, x2,rs):
+
+        psi_xx, psi_xy, psi_yy = self.Hessian(x1, x2,rs)
+
+        A = np.array([
+            [1 - psi_xx, -psi_xy],
+            [-psi_xy, 1 - psi_yy]
+        ])
+
+        detA = np.linalg.det(A)
+
+        return 1.0 / detA
+    
+    def solve_images(self, y1, y2, rs, method="numeric", tol=1e-6):
+        """
+        Solve for NFW image positions, magnifications, Morse indices,
+        and dimensionless time delays.
+
+        Parameters
+        ----------
+        y1, y2 : float  – source position (lens-plane units)
+        rs     : float  – dimensionless NFW scale radius
+        method : str    – only "numeric" is meaningful for NFW
+                          (no closed-form image positions exist)
+        tol    : float  – duplicate-removal threshold in the image plane
+
+        Returns
+        -------
+        results : list of dict, each containing:
+            position               – (x1, x2)
+            magnification          – float (signed)
+            type                   – "minimum" / "saddle" / "maximum"
+            Morse                  – 0 / 0.5 / 1
+            fermat_potential       – φ(x) = (x-y)²/2 − ψ(x)
+            dimensionless_time_delay – φ(x) − φ_min
+            method                 – "numeric"
+        """
+        results = []
+
+        # ── lens equation: x − ∇ψ(x) = y ───────────────────────────────
+        def lens_eq(x):
+            gx, gy = self.grad_potential(x[0], x[1], rs)  # <-- rs threaded
+            return [x[0] - gx - y1,
+                    x[1] - gy - y2]
+
+        # ── collect unique, well-converged roots ─────────────────────────
+        found = []       # list of accepted solution vectors
+
+        for guess in self._nfw_guesses(y1, y2, rs):
+            try:
+                sol, _, ier, _ = fsolve(lens_eq, guess, full_output=True)
+            except Exception:
+                continue
+
+            if ier != 1:                               # fsolve did not converge
+                continue
+
+            residual = np.max(np.abs(lens_eq(sol)))
+            if residual > np.sqrt(tol):                # converged to a non-root
+                continue
+
+            if any(np.linalg.norm(sol - s) < tol for s in found):  # duplicate
+                continue
+
+            found.append(sol)
+
+        # ── classify each image ──────────────────────────────────────────
+        for sol in found:
+            x1, x2 = sol
+            itype = self.image_type(x1, x2, rs)       # <-- rs threaded
+            results.append({
+                "position":      (x1, x2),
+                "magnification": self.magnification(x1, x2, rs),  # <-- rs
+                "type":          itype["type"],
+                "Morse":         itype["Morse"],
+                "method":        "numeric",
+            })
+
+        # ── Fermat potential & relative time delays ──────────────────────
+        for img in results:
+            x1, x2 = img["position"]
+            img["fermat_potential"] = self.Fermat_Potential(x1, x2, y1, y2, rs)  # <-- rs
+
+        if results:
+            phi_min = min(img["fermat_potential"] for img in results)
+            for img in results:
+                img["dimensionless_time_delay"] = img["fermat_potential"] - phi_min
+
+        return results
+                
+    
+    def Amplification(self,w,y,rs,method="numeric"):
+        """
+        Computes geometric optics amplification factor for Point Mass Lens
+
+        Parameters:
+        
+        w: Dimensionless frequency
+        y: Impact parameter
+
+        type: Nature of the image: minimum, saddle, both
+
+        """
+
+        
+        y1 = y
+        y2 = 0
+
+        sol = self.solve_images(y1,y2,rs, method= method)
+
+        mu = []
+        td = []
+        n = []
+        
+        for img in sol:
+            mag = img["magnification"]
+            dimensionless_td = img["dimensionless_time_delay"]
+            MorseIndex = img["Morse"]
+            mu.append(mag)
+            td.append(dimensionless_td)
+            n.append(MorseIndex)
+
+        #magnification = self.Analytical_Magnification(y,type=type)
+
+
+        return solver.GO(w,td,mu,n)
+    
+    @staticmethod
+    def Dimensionless_Frequency(lensmass,f):
+
+        """
+        Computes the dimensionss frequency mentioned in Takahashi 2003
+
+        Parameters:
+
+        lensmass: The mass of the lens in solar units
+        f : Frequency of the gravitational wave source in units of Hz
+
+        Returns: The dimensionless frequency 
+        
+        """
+    
+        const = 24*np.pi*G/c**3
+
+        w = const*lensmass*M_sun*f
+
+        return w
 
 def psi(x,rs):
     """
