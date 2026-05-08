@@ -441,7 +441,7 @@ class NFW1(Lens):
 
         return results
     
-    def F_eps_NFW(w, y1,k,y2=0, N=5000, eps=0.002):
+    def F_eps_NFW(self,w, y1,k,y2=0, N=5000, eps=0.002):
 
         """
         Docstring for F_eps_NFW

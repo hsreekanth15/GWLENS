@@ -34,8 +34,8 @@ class NFW:
     def compute_critical_density(self):
         """Compute critical density of the Universe at z = 0 (in Msun/kpc^3)"""
         #H0_kpc = self.H0 / 1000  # Convert to km/s/kpc
-        rho_c = (3 * self.H0**2 / (8 * np.pi * self.G)).to(u.Msun/u.kpc**3)
-        return rho_c
+        rho_c = (3 * self.H0**2 / (8 * np.pi * self.G))
+        return rho_c.to(u.Msun/u.kpc**3)
 
     def compute_r200(self):
         """Compute r_200 in kpc"""
@@ -51,6 +51,8 @@ class NFW:
         Compute enclosed mass at radius r (in kpc)
         Returns: Mass in Msun
         """
+        if not isinstance(r, u.Quantity):
+            raise TypeError(f"r must be an astropy Quanitty (e.g. r*u.kpc). Got: {type(r)}")
         r = r.to(self.rs.unit)
         x = r / self.rs
         f_x = np.log(1 + x) - x / (1 + x)
@@ -75,21 +77,27 @@ class NFW:
         frequency is in Hertz.
 
         """
+        if not isinstance(f, u.Quantity):
+            f = f*u.Hz 
 
         M = self.mass_enclosed(self.rs)
         
-        f = f*(1/u.s)
+        f = f.to(1/u.s)
 
         return (24*np.pi*self.G*M*f/self.c**3).decompose()
 
     def scaling_ratio(self,D):
+
 
         """
         The ratio used in GLoW to produce u.
         
         """
 
-        Deff = D*(u.kpc)
+        if not isinstance(D,u.Quantity):
+            raise TypeError(f"D must be an astropy Quantity with distance units , e.g. D*u.kpc. Got: {type(D)}")
+
+        Deff = D.to(u.kpc)
         constant = 12* self.G/self.c**2
         return  np.sqrt(constant*self.mass_enclosed(self.rs)*Deff)/self.rs
 
