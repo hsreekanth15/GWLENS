@@ -8,6 +8,7 @@ import logging
 from .base import Lens
 from gwlens.lens import solver
 from scipy.optimize import fsolve
+from scipy.special import jv
 from astropy.constants import c,G,M_sun
 from joblib import Parallel, delayed
 from mpmath import mp,mpf, mpc, sqrt, exp, besselj, quad,log, atan,atanh
@@ -32,14 +33,15 @@ class NFW1(Lens):
     """
     Navarro Frenk White Class, a class inherited from the base class Lens
     """
-    def potential(self,rs, x):
-        scale_radius = rs
-        u = scale_radius*x
-
-        if u <= 1:
-            return 0.5*(  (np.log(u/2))**2 - (np.arctanh(np.sqrt(1-u**2)))**2 )
-        else:
-            return 0.5*( (np.log(u/2))**2 + (np.arctan(np.sqrt(u**2 -1)))**2   )
+    def potential(self,k, x):
+        u = k * x
+        return np.where(
+            u <= 1,
+            0.5 * (np.log(np.maximum(u, 1e-300) / 2)**2
+                - np.arctanh(np.sqrt(np.maximum(1 - u**2, 0)))**2),
+            0.5 * (np.log(u / 2)**2
+                + np.arctan(np.sqrt(np.maximum(u**2 - 1, 0)))**2)
+        )
         
     def grad_potential(self, x1, x2, rs):
         """
@@ -438,7 +440,31 @@ class NFW1(Lens):
                 img["dimensionless_time_delay"] = img["fermat_potential"] - phi_min
 
         return results
-                
+    
+    def F_eps_NFW(w, y1,k,y2=0, N=5000, eps=0.002):
+
+        """
+        Docstring for F_eps_NFW
+        
+        :param w: Dimensionless frequency
+        :param y1: Impact parameter 
+        :param y2: Impact parameter (set to 0 )
+        :param k: Normalization constant , consistent with GLoW NFW normalization
+        :param N: Grid resolution
+        :param eps: regulaization
+        """ 
+        y   = np.sqrt(y1**2 + y2**2)
+        w_c = w * (1.0 + 1j * eps)
+        L   = max(y, 0.0) + max(3.5, 4.0 / np.sqrt(w * eps), 2.5 * k)
+        r   = np.linspace(0, L, N + 1)[1:]
+        dr  = r[1] - r[0]
+
+        psi       = self.potential(k, r)
+        phi_r     = 0.5 * (r**2 + y**2) - psi
+        J0        = jv(0, w_c * y * r)
+        integrand = np.exp(1j * w_c * phi_r) * J0 * r
+        return (w / 1j) * np.sum(integrand) * dr
+                    
     
     def Amplification(self,w,y,rs,method="numeric"):
         """
