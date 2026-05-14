@@ -7,8 +7,9 @@ import configparser
 import logging
 from .base import Lens
 from gwlens.lens import solver
-from scipy.optimize import fsolve
+from scipy.optimize import fsolve,brentq
 from scipy.special import jv
+from scipy.special import factorial as sp_fac
 from astropy.constants import c,G,M_sun
 from joblib import Parallel, delayed
 from mpmath import mp,mpf, mpc, sqrt, exp, besselj, quad,log, atan,atanh
@@ -42,7 +43,21 @@ class NFW1(Lens):
             0.5 * (np.log(u / 2)**2
                 + np.arctan(np.sqrt(np.maximum(u**2 - 1, 0)))**2)
         )
+    def potential1(self,k, x):
+        u  = np.maximum(k * x, 1e-300)
+
+        a  = np.log(u / 2.0)                                     # ln(u/2), always negative for u<2
         
+        # u <= 1 : factor  a² − b² = (a−b)(a+b)  to avoid catastrophic cancellation
+        s     = np.sqrt(np.maximum(1.0 - u**2, 0.0))
+        b     = np.arctanh(s)                                    # arctanh(√(1−u²))
+        leq1  = 0.5 * (a - b) * (a + b)                         # stable for all u ≤ 1
+
+        # u > 1 : no cancellation issue (both terms are positive and additive)
+        t     = np.sqrt(np.maximum(u**2 - 1.0, 0.0))
+        gt1   = 0.5 * (a**2 + np.arctan(t)**2)
+
+        return np.where(u <= 1.0, leq1, gt1)
     def grad_potential(self, x1, x2, rs):
         """
         Gradient of the NFW lensing potential (= deflection angle vector).
@@ -106,7 +121,7 @@ class NFW1(Lens):
 
         prefactor = 12*G*Ml*M_sun/c**3
 
-        sol = self.solve_images(y1,y2,rs,method="numeric")
+        sol = self.solve_images(y1,y2,rs)
         td = []
         for img in sol:
             dimensionlenss_td = img["dimensionless_time_delay"]
@@ -120,20 +135,58 @@ class NFW1(Lens):
         x = np.sqrt(x1**2 + x2**2)
         
         return 0.5* ( (x1-y1)**2 + (x2-y2)**2) - self.potential(rs,x)
+
     def _h(self, u):
         """
-        Auxiliary angular function h(u) that appears in deflection and
-        mean-convergence expressions.
-            h(u) = arctanh(sqrt(1-u²)) / sqrt(1-u²)   for u < 1
-            h(u) = 1                                    for u = 1
-            h(u) = arctan(sqrt(u²-1))  / sqrt(u²-1)   for u > 1
+        Stable auxiliary function for NFW lensing.
+
+        Handles removable singularity at u = 1.
         """
-        if abs(u - 1.0) < 1e-7:
-            return 1.0
-        elif u < 1.0:
-            return np.arctanh(np.sqrt(1.0 - u**2)) / np.sqrt(1.0 - u**2)
+
+        if np.isscalar(u):
+            if abs(u - 1.0) < 1e-7:
+                return 1.0
+
+            if u < 1.0:
+                s = np.sqrt(max(1.0 - u*u, 0.0))
+
+                if s < 1e-12:
+                    return 1.0  # limit
+
+                return np.arctanh(s) / s
+
+            else:
+                t = np.sqrt(max(u*u - 1.0, 0.0))
+
+                if t < 1e-12:
+                    return 1.0  # symmetric limit
+
+                return np.arctan(t) / t
+
         else:
-            return np.arctan(np.sqrt(u**2 - 1.0)) / np.sqrt(u**2 - 1.0)
+            # vector-safe version
+            u = np.asarray(u)
+
+            out = np.ones_like(u)
+
+            mask_low  = u < 1.0
+            mask_high = u > 1.0
+
+            # u < 1
+            ul = u[mask_low]
+            s = np.sqrt(np.maximum(1.0 - ul**2, 0.0))
+            safe = s > 1e-12
+            out[mask_low] = 1.0
+            out[mask_low][safe] = np.arctanh(s[safe]) / s[safe]
+
+            # u > 1
+            uh = u[mask_high]
+            t = np.sqrt(np.maximum(uh**2 - 1.0, 0.0))
+            safe = t > 1e-12
+            out[mask_high] = 1.0
+            out[mask_high][safe] = np.arctan(t[safe]) / t[safe]
+
+            return out
     def _convergence(self, r, rs):
         """
         NFW convergence (surface-mass density in units of Σ_cr):
@@ -273,83 +326,91 @@ class NFW1(Lens):
         return guesses
     
 
-    def solve_images(self, y1, y2, rs, method="numeric", tol=1e-6):
+    def geometric_optics_amplification(self, w, y1, y2, rs):
         """
-        Solve for NFW image positions, magnifications, Morse indices,
-        and dimensionless time delays.
+        True geometric optics amplification for NFW lens.
 
-        Parameters
-        ----------
-        y1, y2 : float  – source position (lens-plane units)
-        rs     : float  – dimensionless NFW scale radius
-        method : str    – only "numeric" is meaningful for NFW
-                          (no closed-form image positions exist)
-        tol    : float  – duplicate-removal threshold in the image plane
+        Implements:
+            F_geo(w) = Σ μ_i exp(i w Δt_i - i π n_i)
 
-        Returns
-        -------
-        results : list of dict, each containing:
-            position               – (x1, x2)
-            magnification          – float (signed)
-            type                   – "minimum" / "saddle" / "maximum"
-            Morse                  – 0 / 0.5 / 1
-            fermat_potential       – φ(x) = (x-y)²/2 − ψ(x)
-            dimensionless_time_delay – φ(x) − φ_min
-            method                 – "numeric"
+        where:
+            μ_i  = magnification
+            Δt_i = dimensionless time delay (Fermat potential difference)
+            n_i  = Morse index
         """
-        results = []
 
-        # ── lens equation: x − ∇ψ(x) = y ───────────────────────────────
-        def lens_eq(x):
-            gx, gy = self.grad_potential(x[0], x[1], rs)  # <-- rs threaded
-            return [x[0] - gx - y1,
-                    x[1] - gy - y2]
+        sol = self.solve_images(y1, y2, rs)
 
-        # ── collect unique, well-converged roots ─────────────────────────
-        found = []      
+        if len(sol) == 0:
+            return 0.0 + 0.0j
 
-        for guess in self._nfw_guesses(y1, y2, rs):
-            try:
-                sol, _, ier, _ = fsolve(lens_eq, guess, full_output=True)
-            except Exception:
-                continue
+        # Fermat potentials
+        fermat = np.array([img["fermat_potential"] for img in sol])
+        phi_min = np.min(fermat)
 
-            if ier != 1:                               # fsolve did not converge
-                continue
+        F_geo = 0.0 + 0.0j
 
-            residual = np.max(np.abs(lens_eq(sol)))
-            if residual > np.sqrt(tol):                # converged to a non-root
-                continue
+        for img in sol:
 
-            if any(np.linalg.norm(sol - s) < tol for s in found):  # duplicate
-                continue
+            mu = img["magnification"]
+            phi = img["fermat_potential"]
+            n   = img["Morse"]
 
-            found.append(sol)
+            dt = phi - phi_min
 
-        # ── classify each image ──────────────────────────────────────────
-        for sol in found:
-            x1, x2 = sol
-            itype = self.image_type(x1, x2, rs)       # <-- rs threaded
-            results.append({
-                "position":      (x1, x2),
-                "magnification": self.magnification(x1, x2, rs),  # <-- rs
-                "type":          itype["type"],
-                "Morse":         itype["Morse"],
-                "method":        "numeric",
-            })
+            phase = np.exp(1j * w * dt - 1j * np.pi * n)
 
-        # ── Fermat potential & relative time delays ──────────────────────
-        for img in results:
-            x1, x2 = img["position"]
-            img["fermat_potential"] = self.Fermat_Potential(x1, x2, y1, y2, rs)  # <-- rs
+            F_geo += mu * phase
 
-        if results:
-            phi_min = min(img["fermat_potential"] for img in results)
-            for img in results:
-                img["dimensionless_time_delay"] = img["fermat_potential"] - phi_min
+        return F_geo
+    
+    def geometric_optics_grid(self, w_values, y, rs):
+        """
+        Computes F_geo(w) for fixed y over full frequency grid.
+        """
 
-        return results
+        w_values = np.asarray(w_values)
 
+        F = np.zeros_like(w_values, dtype=np.complex128)
+
+        for i, w in enumerate(w_values):
+            F[i] = self.geometric_optics_amplification(w, y, 0.0, rs)
+
+        return F
+    
+    def wave_geo_deviation_map(self, w_vals, y_vals, rs):
+        """
+        Returns:
+            deviation(w,y), wave region mask (>10%)
+        """
+
+        F_wave = np.zeros((len(y_vals), len(w_vals)))
+        F_geo  = np.zeros((len(y_vals), len(w_vals)))
+
+        for i, y in enumerate(y_vals):
+
+            # precompute geometric optics once per y
+            geo_y = np.array([
+                self.geometric_optics_amplification(w, y, 0.0, rs)
+                for w in w_vals
+            ])
+
+            F_geo[i, :] = np.abs(geo_y)
+
+            # wave optics
+            Psi_nfw = self
+
+            It = self.It_SingleIntegral_C(Psi_nfw, y, p_prec={'tmax': 1e5})
+            Fw = self.Fw_FFT_C(It, p_prec={'wmin': w_vals.min(), 'wmax': w_vals.max()})
+
+            F_wave[i, :] = np.abs(Fw.eval_Fw(w_vals))
+
+        # deviation
+        deviation = np.abs(F_wave - F_geo) / (F_geo + 1e-30)
+
+        wave_region = deviation > 0.10
+
+        return F_wave, F_geo, deviation, wave_region
 
     def magnification(self, x1, x2,rs):
 
@@ -363,8 +424,268 @@ class NFW1(Lens):
         detA = np.linalg.det(A)
 
         return 1.0 / detA
+    from scipy.optimize import brentq
+
+    from scipy.optimize import brentq
+
+    def solve_images(self, y1, y2, rs, tol=1e-10):
+        """
+        Robust NFW image solver.
+
+        Returns the physical image solutions for a circular NFW lens.
+
+        Maximum number of images:
+            • 1 outside caustic
+            • 3 inside caustic
+        """
+
+        y = np.hypot(y1, y2)
+
+        if y > 1e-14:
+            phi_s = np.arctan2(y2, y1)
+        else:
+            phi_s = 0.0
+
+        # ============================================================
+        # Stable scalar deflection α(r)
+        # ============================================================
+
+        def alpha(r):
+
+            r = np.maximum(r, 1e-14)
+
+            u = rs * r
+
+            if abs(u - 1.0) < 1e-10:
+                h = 1.0
+
+            elif u < 1.0:
+
+                s = np.sqrt(1.0 - u*u)
+
+                if s < 1e-14:
+                    h = 1.0
+                else:
+                    h = np.arctanh(s) / s
+
+            else:
+
+                t = np.sqrt(u*u - 1.0)
+
+                if t < 1e-14:
+                    h = 1.0
+                else:
+                    h = np.arctan(t) / t
+
+            return (np.log(u / 2.0) + h) / r
+
+        # ============================================================
+        # Radial equations
+        # ============================================================
+
+        def f_same(r):
+            return r - alpha(r) - y
+
+        def f_counter(r):
+            return alpha(r) - r - y
+
+        # ============================================================
+        # Root search interval
+        # ============================================================
+
+        rmin = 1e-8
+        rmax = max(30.0 / rs, 30.0)
+
+        grid = np.logspace(np.log10(rmin),
+                        np.log10(rmax),
+                        4000)
+
+        roots = []
+
+        # ============================================================
+        # Find bracketed roots
+        # ============================================================
+
+        for side, func in [("same", f_same),
+                        ("counter", f_counter)]:
+
+            vals = np.array([func(r) for r in grid])
+
+            for i in range(len(grid)-1):
+
+                r1 = grid[i]
+                r2 = grid[i+1]
+
+                f1 = vals[i]
+                f2 = vals[i+1]
+
+                if not np.isfinite(f1) or not np.isfinite(f2):
+                    continue
+
+                # Require TRUE sign crossing
+                if f1 * f2 > 0:
+                    continue
+
+                try:
+
+                    rsol = brentq(func,
+                                r1,
+                                r2,
+                                xtol=1e-14,
+                                rtol=1e-14)
+
+                except Exception:
+                    continue
+
+                # verify root
+                if abs(func(rsol)) > 1e-8:
+                    continue
+
+                roots.append((side, rsol))
+
+        # ============================================================
+        # Remove duplicates robustly
+        # ============================================================
+
+        cleaned = []
+
+        roots.sort(key=lambda z: z[1])
+
+        for side, r in roots:
+
+            duplicate = False
+
+            for side2, r2 in cleaned:
+
+                if side != side2:
+                    continue
+
+                # relative clustering
+                rel = abs(r - r2) / max(abs(r2), 1e-10)
+
+                if rel < 1e-5:
+                    duplicate = True
+                    break
+
+            if not duplicate:
+                cleaned.append((side, r))
+
+        # ============================================================
+        # NFW cannot produce >3 physical images
+        # ============================================================
+
+        if len(cleaned) > 3:
+
+            # keep only best roots
+            scored = []
+
+            for side, r in cleaned:
+
+                if side == "same":
+                    resid = abs(f_same(r))
+                else:
+                    resid = abs(f_counter(r))
+
+                scored.append((resid, side, r))
+
+            scored.sort(key=lambda z: z[0])
+
+            cleaned = [(s, r) for _, s, r in scored[:3]]
+
+        # ============================================================
+        # Convert back to image plane
+        # ============================================================
+
+        results = []
+
+        for side, r in cleaned:
+
+            if side == "same":
+
+                x1 = r * np.cos(phi_s)
+                x2 = r * np.sin(phi_s)
+
+            else:
+
+                x1 = -r * np.cos(phi_s)
+                x2 = -r * np.sin(phi_s)
+
+            # Verify full 2D equation
+            gx, gy = self.grad_potential(x1, x2, rs)
+
+            residual = np.sqrt(
+                (x1 - gx - y1)**2 +
+                (x2 - gy - y2)**2
+            )
+
+            if residual > 1e-7:
+                continue
+
+            itype = self.image_type(x1, x2, rs)
+
+            try:
+                mu = self.magnification(x1, x2, rs)
+            except Exception:
+                mu = np.inf
+
+            results.append({
+
+                "position": (x1, x2),
+
+                "magnification": mu,
+
+                "type": itype["type"],
+
+                "Morse": itype["Morse"],
+
+                "method": "numeric"
+
+            })
+
+        # ============================================================
+        # Fermat potential
+        # ============================================================
+
+        for img in results:
+
+            x1, x2 = img["position"]
+
+            phi = self.Fermat_Potential(
+                x1, x2,
+                y1, y2,
+                rs
+            )
+
+            img["fermat_potential"] = phi
+
+        # ============================================================
+        # Time delays
+        # ============================================================
+
+        if results:
+
+            phi_min = min(
+                img["fermat_potential"]
+                for img in results
+            )
+
+            for img in results:
+
+                img["dimensionless_time_delay"] = (
+                    img["fermat_potential"] - phi_min
+                )
+
+        # ============================================================
+        # Sort by arrival time
+        # ============================================================
+
+        results.sort(
+            key=lambda z: z["dimensionless_time_delay"]
+        )
+
+        return results
     
-    def solve_images(self, y1, y2, rs, method="numeric", tol=1e-6):
+    def solve_images_old(self, y1, y2, rs, method="numeric", tol=1e-6):
         """
         Solve for NFW image positions, magnifications, Morse indices,
         and dimensionless time delays.
@@ -372,7 +693,7 @@ class NFW1(Lens):
         Parameters
         ----------
         y1, y2 : float  – source position (lens-plane units)
-        rs     : float  – dimensionless NFW scale radius
+        rs     : float  – dimensionless NFW normalization parameter (like in GLoW paper)
         method : str    – only "numeric" is meaningful for NFW
                           (no closed-form image positions exist)
         tol    : float  – duplicate-removal threshold in the image plane
@@ -409,10 +730,10 @@ class NFW1(Lens):
                 continue
 
             residual = np.max(np.abs(lens_eq(sol)))
-            if residual > np.sqrt(tol):                # converged to a non-root
+            if residual > tol:                # converged to a non-root
                 continue
 
-            if any(np.linalg.norm(sol - s) < tol for s in found):  # duplicate
+            if any(np.linalg.norm(sol - s) < 1e-4 for s in found):  # duplicate
                 continue
 
             found.append(sol)
@@ -459,11 +780,162 @@ class NFW1(Lens):
         r   = np.linspace(0, L, N + 1)[1:]
         dr  = r[1] - r[0]
 
-        psi       = self.potential(k, r)
+        psi       = self.potential1(k, r)
         phi_r     = 0.5 * (r**2 + y**2) - psi
         J0        = jv(0, w_c * y * r)
         integrand = np.exp(1j * w_c * phi_r) * J0 * r
         return (w / 1j) * np.sum(integrand) * dr
+    
+    
+
+
+
+
+    def filon_weights(self,theta, K=16):
+        """
+        Filon–Lagrange quadrature weights (A0, A1, A2) for one panel [x0, x0+2h].
+
+        For the composite rule ∫ f(t) e^{iωt} dt, all panels share the same
+        weights on a uniform grid (θ = ωh is fixed).
+
+        Derived from the Lagrange quadratic interpolant on {0, h, 2h}:
+            Aⱼ = ∫₀² Lⱼ(u) e^{iθu} du
+
+        which reduces to A0 = ½(I₂−3I₁+2I₀), A1 = −(I₂−2I₁), A2 = ½(I₂−I₁)
+        via the moments Iₙ = ∫₀² uⁿ e^{iθu} du.
+
+        At θ=0 → Simpson weights (1/3, 4/3, 1/3).  Exact for quadratic f.
+
+        Parameters
+        ----------
+        theta : float  – ωh, phase accumulation per half-panel
+        K     : int    – Taylor truncation order (used when |θ| < 0.5)
+        """
+        if abs(theta) < 0.5:
+            # Stable Taylor series: Iₙ = Σₖ (iθ)ᵏ/k! · 2^{n+k+1}/(n+k+1)
+            # avoids catastrophic cancellation in the direct formulas near θ=0
+            k   = np.arange(K, dtype=float)
+            qk  = (1j * theta)**k / sp_fac(k, exact=False)   # (iθ)ᵏ/k!
+            p2  = 2.0**k
+            I0  = np.sum(qk * 2.0 * p2 / (k + 1.0))          # n=0: 2^{k+1}/(k+1)
+            I1  = np.sum(qk * 4.0 * p2 / (k + 2.0))          # n=1: 2^{k+2}/(k+2)
+            I2  = np.sum(qk * 8.0 * p2 / (k + 3.0))          # n=2: 2^{k+3}/(k+3)
+        else:
+            # Direct analytic recurrence (IBP on ∫₀² uⁿ e^{iθu} du)
+            P  = np.exp(2j * theta)
+            q  = 1j * theta
+            I0 = (P - 1.0) / q
+            I1 = 2.0 * P / q - I0 / q
+            I2 = 4.0 * P / q - 2.0 * I1 / q
+
+        A0 = 0.5 * (I2 - 3.0*I1 + 2.0*I0)
+        A1 = -(I2 - 2.0*I1)
+        A2 = 0.5 * (I2 - I1)
+        return A0, A1, A2
+
+    def F_filon_NFW(self, w, y, rs, N=None, T=None, tail_order=1):
+        """
+        NFW wave-optics amplification F(w) via Filon quadrature.
+
+        After t = r²/2 the Kirchhoff integral becomes:
+            F = (w/i) exp(iwy²/2) ∫₀ᵀ f(t) e^{iwt} dt
+        with f(t) = J₀(wy√(2t)) exp(-iw ψ(√(2t))).
+
+        Filon treats e^{iwt} analytically (exact for any panel width)
+        and approximates f as a quadratic per panel — so accuracy does
+        not degrade with increasing w.  The required N scales as wy/rs
+        rather than w·L/π as in F_eps_NFW.
+
+        Parameters
+        ----------
+        w          : float  – dimensionless frequency
+        y          : float  – impact parameter
+        rs         : float  – NFW scale parameter (= k in potential1)
+        N          : int    – number of panels, must be even (default: adaptive)
+        T          : float  – upper limit in t-space = r_max²/2 (default: adaptive)
+        tail_order : int    – asymptotic tail-correction order: 0, 1, or 2
+
+        Returns
+        -------
+        F : complex
+        """
+        # ── Upper limit in t-domain ───────────────────────────────────
+        if T is None:
+            r_max = max(y, 0.0) + max(5.0 / rs, 5.0)
+            T = 0.5 * r_max**2
+
+        # ── Grid size: resolve f(t), NOT e^{iwt} ─────────────────────
+        # f oscillates at frequency ~ max(wy·rs, w·rs²/4) per unit t.
+        # Filon handles e^{iwt} analytically, so N can be much smaller
+        # than for direct quadrature (no need to resolve the w·t phase).
+        if N is None:
+            freq_bessel = w * max(y, 1e-8) * rs        # J₀ oscillation in t
+            freq_psi    = 0.25 * w * rs**2             # ψ oscillation in t
+            freq        = max(freq_bessel, freq_psi, 1.0)
+            N = max(256, 2 * int(10.0 * T * freq / np.pi + 1))
+        elif N % 2:
+            N += 1
+
+        h     = T / N
+        theta = w * h                          # phase per half-panel
+
+        # ── Grid and amplitude f(t) ───────────────────────────────────
+        t    = np.linspace(0.0, T, N + 1)     # (N+1,) nodes
+        r    = np.sqrt(2.0 * t)
+        r[0] = 0.0                             # avoid √0 in potential
+
+        psi       = self.potential1(rs, np.maximum(r, 1e-300))
+        psi[0]    = 0.0                        # ψ(0) = 0 exactly
+
+        J0        = jv(0, w * y * r)          # real w — no complex Bessel
+        J0[0]     = 1.0
+
+        f = J0 * np.exp(-1j * w * psi)
+
+        # ── Composite Filon rule ──────────────────────────────────────
+        # Weights are the same for every panel (uniform grid → fixed θ)
+        A0, A1, A2 = self.filon_weights(theta)
+
+        g      = f * np.exp(1j * w * t)       # gⱼ = fⱼ · e^{iw·tⱼ}
+        g_even = g[0::2]                       # j = 0, 2, …, N  (len N/2+1)
+        g_odd  = g[1::2]                       # j = 1, 3, …, N-1 (len N/2)
+
+        # Node contributions:
+        #   left endpoint  t₀         → A0
+        #   right endpoint t_N         → A2
+        #   interior even  t_{2k}     → A0 + A2  (shared between two panels)
+        #   all odd nodes  t_{2k+1}   → A1       (panel midpoints)
+        S = (  A0          * g_even[0]
+             + A2          * g_even[-1]
+             + (A0 + A2)   * g_even[1:-1].sum()
+             + A1          * g_odd.sum()       )
+
+        integral = h * S
+
+        # ── Asymptotic tail correction ∫_T^∞ f(t) e^{iwt} dt ─────────
+        # Integration by parts:
+        #   ∫_T^∞ f e^{iwt} dt = -f(T)/(iw)·e^{iwT} + f'(T)/(iw)²·e^{iwT} + …
+        if tail_order >= 1:
+            rT   = np.sqrt(2.0 * T)
+            psiT = self.potential1(rs, np.array([rT]))[0]
+            J0T  = float(jv(0, w * y * rT))
+            fT   = J0T * np.exp(-1j * w * psiT)
+            eiT  = np.exp(1j * w * T)
+
+            integral += (-fT / (1j * w)) * eiT
+
+            if tail_order >= 2:
+                # f'(T) w.r.t. t:
+                #   dJ₀/dt  = -J₁(wyr)·wy/r  (r = √(2t), dr/dt = 1/r)
+                #   dψ/dt   = ψ'(r)/r = α(r)/r
+                J1T      = float(jv(1, w * y * rT))
+                alpha_rT = (np.log(rs * rT / 2.0) + self._h(rs * rT)) / rT
+                dfT_dt   = (  (-w * y * J1T / rT)
+                             - (1j * w * alpha_rT / rT) * J0T
+                            ) * np.exp(-1j * w * psiT)
+                integral += (dfT_dt / (1j * w)**2) * eiT
+
+        return (w / 1j) * np.exp(0.5j * w * y**2) * integral
                     
     
     def Amplification(self,w,y,rs,method="numeric"):
@@ -483,7 +955,7 @@ class NFW1(Lens):
         y1 = y
         y2 = 0
 
-        sol = self.solve_images(y1,y2,rs, method= method)
+        sol = self.solve_images(y1,y2,rs)
 
         mu = []
         td = []
