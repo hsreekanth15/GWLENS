@@ -63,13 +63,13 @@ def Solver_AS(w, y, psi,**kwargs):
         else:
             kwargs_mpf[k] = mpf(v)
 
-    a = 0.00001
+    a = mpf(0.00001)
 
     if w < 1 :
-        b = 100 / w
+        b = mpf(100) / w
     elif 1 < w < 500:
-        b = 1000/w 
-    else: b = 10000/w   
+        b = mpf(1000)/w 
+    else: b = mpf(10000)/w   
     
     
     # mpmath.quad with complex integrand
