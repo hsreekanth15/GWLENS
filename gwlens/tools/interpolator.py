@@ -3,7 +3,7 @@ import argparse
 import os
 import numpy as np
 from mpmath import mp
-from gwlens.lens import point,sis,nfw,powerlaw
+from gwlens.lens import point,sis,nfw,powerlaw,pbh
 from gwlens.tools import halo
 import matplotlib.pyplot as plt
 
@@ -77,6 +77,14 @@ def interpolate():
         core = float(config['Interpolation']['powerlaw_coreradius'])
         p = float(config['Interpolation']['powerlaw_exponent'])
 
+    elif lensmodel == "dpbh":
+
+        f_pbh_lower = float(config['Interpolation']['f_pbh_lower_limit'])
+        f_pbh_upper = float(config['Interpolation']['f_pbh_upper_limit'])
+        f_pbh_samples = int(config['Interpolation']['f_pbh_samples'])
+         #Define also mPBH here upon implementation!
+        f_pbh = np.linspace(f_pbh_lower,f_pbh_upper,f_pbh_samples)
+
     
     mp.dps = float(config['Interpolation']['precision'])
 
@@ -101,6 +109,10 @@ def interpolate():
     elif lensmodel == "powerlaw":
         print(f"Lens : {lensmodel}")
         powerlaw.compute_powerlaw_lens_grid(w,y,amp,core,p,output_path,num_processes = n_parallel)
+
+    elif lensmodel == "dpbh":
+        print(f"Lens: {lensmodel} ")
+        pbh.compute_pbh_lens_grid(w,y,f_pbh,output_path,num_processes = n_parallel)
 
 
 
