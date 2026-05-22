@@ -28,7 +28,7 @@ class PBH:
     Dls   : Quantity  — lens–source distance
     """
 
-    def __init__(self, m_PBH, f_PBH, Dl, Ds, Dls):
+    def __init__(self, m_PBH, f_PBH, Dl= 1 *(u.kpc), Ds=10*(u.kpc), Dls=9*(u.kpc)):
         self.m_PBH = float(m_PBH)   # numerical value in M_sun
         self.f_PBH = float(f_PBH)
         self.Dl    = Dl.to(u.m)
@@ -160,6 +160,11 @@ def compute_pbh_lens_grid(w_values, y_values,f_pbh_values,hdf5_filename, num_pro
     logger.warning("MPI parallelization is not implemented in this function; it uses multiprocessing on a single node.")
     
     start_time = time.time()
+
+    def _worker(i, j, k, w, y, f_pbh):
+        pbh = PBH(m_PBH=100,f_PBH=f_pbh)
+        val = pbh.amplification(w, y)
+        return (i, j, k, val.real, val.imag)
 
     with h5py.File(hdf5_filename, "w") as h5file:
         h5file.create_dataset("w_values", data=w_values)
