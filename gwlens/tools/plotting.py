@@ -23,7 +23,7 @@ def get_scaled_fontsizes(fig_width, fig_height, base_figsize=(6, 4), base_fontsi
 def apply_figure_style(fig_width=7.2, fig_height=5):
     fonts = get_scaled_fontsizes(fig_width, fig_height)
     plt.rcParams.update({
-        'text.usetex': False,
+        'text.usetex': True,
         'font.family': 'STIXGeneral',
         'mathtext.fontset': 'cm',
         'figure.figsize': (fig_width, fig_height),
