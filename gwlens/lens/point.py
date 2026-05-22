@@ -14,6 +14,7 @@ import time
 import h5py
 from .base import Lens
 from gwlens.lens import solver
+from gwlens.tools import logutils
 
 mp.dps= 60
 
@@ -486,40 +487,17 @@ def compute_point_lens_grid(w_values, y_values, hdf5_filename, num_processes=Non
     - num_processes (int or None): number of CPU cores to use (default: all)
     """
 
-        #Read the config file
+    #Read the config file
     config = configparser.ConfigParser()
     config.read('parameters.ini')
-
-    # Setup logging
-    logger = logging.getLogger("compute_logger")
-    logger.setLevel(logging.INFO)
-
 
     #Store result
     output_folder = config['Output']['outdir']
 
-    # Subfolder for interpolation outputs
-    log_folder = os.path.join(output_folder, 'logs')
-    os.makedirs(log_folder, exist_ok=True)  # Create if it doesn't exist
 
-    log_file = os.path.join(log_folder,'interpolation.log')
+    # Setup logging
+    logger = logutils.setup_logger(output_folder, logger_name="point_lens_logger")
 
-
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.INFO)
-
-    stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(logging.INFO)
-
-    formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(message)s",
-        "%Y-%m-%d %H:%M:%S"
-    )
-    file_handler.setFormatter(formatter)
-    stream_handler.setFormatter(formatter)
-
-    logger.addHandler(file_handler)
-    logger.addHandler(stream_handler)
 
     W_len = len(w_values)
     Y_len = len(y_values)

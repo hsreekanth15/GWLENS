@@ -5,6 +5,7 @@ import numpy as np
 from mpmath import mp
 from gwlens.lens import point,sis,nfw,powerlaw,pbh
 from gwlens.tools import halo
+from gwlens.tools import logutils
 import matplotlib.pyplot as plt
 
 
@@ -49,6 +50,8 @@ def interpolate():
     output_path = os.path.join(interpolation_folder ,interpolator_output_filename)
     #Lens_Model
     lensmodel = config['Interpolation']['lensmodel']
+    
+    logger = logutils.setup_logger(interpolation_folder, logger_name="interpolation_logger")
 
     # Validate lens model
     if lensmodel not in valid_lens_models:
