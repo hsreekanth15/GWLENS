@@ -187,10 +187,10 @@ def compute_pbh_lens_grid(w_values, y_values,f_pbh_values,m_pbh_values,hdf5_file
                 dset[i, j, k,l, 0] = re
                 dset[i, j, k,l, 1] = im
 
-                if count % 10000 == 0 or count == total_points:
+                if count % 1000 == 0 or count == total_points:
                     logger.info(f" {count}/{total_points} results written...")
 
-        h5file.flush()
+                    h5file.flush() #flushes data every 1000 points (should make it user controlled instead of manual)
 
     end_time = time.time()
     logger.info(f" Done in {end_time - start_time:.2f} seconds")
