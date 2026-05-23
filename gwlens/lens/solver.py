@@ -5,6 +5,7 @@ import h5py
 import os
 import configparser
 import logging
+from gwlens.tools import logutils
 from mpmath import mp,mpf, mpc, sqrt, exp, besselj, quad, log
 
 
@@ -161,28 +162,7 @@ def compute_lens_grid(w_values, y_values,psi, hdf5_filename,num_processes=None,*
     #Store result
     output_folder = config['Output']['outdir']
 
-    # Subfolder for interpolation outputs
-    log_folder = os.path.join(output_folder, 'logs')
-    os.makedirs(log_folder, exist_ok=True)  # Create if it doesn't exist
-
-    log_file = os.path.join(log_folder,'interpolation.log')
-
-
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.INFO)
-
-    stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(logging.INFO)
-
-    formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(message)s",
-        "%Y-%m-%d %H:%M:%S"
-    )
-    file_handler.setFormatter(formatter)
-    stream_handler.setFormatter(formatter)
-
-    logger.addHandler(file_handler)
-    logger.addHandler(stream_handler)
+    logger = logutils.setup_logger(output_folder=output_folder,logger_name="General Purpose Lens Grid")
 
     W_len = len(w_values)
     Y_len = len(y_values)

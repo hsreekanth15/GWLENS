@@ -73,6 +73,10 @@ scale_radius_samples = 2
 powerlaw_coreradius = 0.1
 powerlaw_amplitude = 1.0
 powerlaw_exponent = 1.0
+
+f_pbh_lower_limit = 0.5
+f_pbh_upper_limit = 1.0
+f_pbh_samples = 1.0
 """
     with open(output_file, "w") as f:
         f.write(content)

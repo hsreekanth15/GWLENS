@@ -122,7 +122,13 @@ class PBH:
         return amp
 
 
-def compute_pbh_lens_grid(w_values, y_values,f_pbh_values,hdf5_filename, num_processes=None):
+def _worker(args):
+    i, j, k,l, w, y, f_pbh,m_pbh = args
+    pbh = PBH(m_PBH=m_pbh,f_PBH=f_pbh)
+    val = pbh.amplification(w, y)
+    return (i, j, k,l, val.real, val.imag)
+
+def compute_pbh_lens_grid(w_values, y_values,f_pbh_values,m_pbh_values,hdf5_filename, num_processes=None):
     """
     Computes the PBH lensing amplification factor over a grid
     and stores the result in an HDF5 file.
@@ -149,38 +155,37 @@ def compute_pbh_lens_grid(w_values, y_values,f_pbh_values,hdf5_filename, num_pro
     W_len = len(w_values)
     Y_len = len(y_values)
     F_PBH_len = len(f_pbh_values)
-    total_points = W_len * Y_len * F_PBH_len
+    M_PBH_len = len(m_pbh_values)
+    total_points = W_len * Y_len * F_PBH_len *M_PBH_len
 
     # Create task list
-    tasks = [(i, j, k, w_values[i], y_values[j], f_pbh_values[k]) for i in range(W_len) for j in range(Y_len) for k in range(F_PBH_len)]
+    tasks = [(i, j, k, l,w_values[i], y_values[j], f_pbh_values[k], m_pbh_values[l]) for i in range(W_len) for j in range(Y_len) for k in range(F_PBH_len) for l in range(M_PBH_len)]
     logger.info(f" Output file: {hdf5_filename}")
-    logger.info(f" Grid size: {W_len} × {Y_len} × {F_PBH_len} → {total_points} points")
+    logger.info(f" Grid size: {W_len} × {Y_len} × {F_PBH_len} × {M_PBH_len} → {total_points} points")
     logger.info("Launching single node parallel computation...")
     logger.warning("This may take a while for large grids. Monitor progress in the logs.")
     logger.warning("MPI parallelization is not implemented in this function; it uses multiprocessing on a single node.")
     
     start_time = time.time()
 
-    def _worker(i, j, k, w, y, f_pbh):
-        pbh = PBH(m_PBH=100,f_PBH=f_pbh)
-        val = pbh.amplification(w, y)
-        return (i, j, k, val.real, val.imag)
+
 
     with h5py.File(hdf5_filename, "w") as h5file:
         h5file.create_dataset("w_values", data=w_values)
         h5file.create_dataset("y_values", data=y_values)
         h5file.create_dataset("f_pbh_values", data=f_pbh_values)
+        h5file.create_dataset("m_pbh_values", data = m_pbh_values)
         dset = h5file.create_dataset(
             "results",
-            shape=(W_len, Y_len,F_PBH_len, 2),
+            shape=(W_len, Y_len,F_PBH_len, M_PBH_len,2),
             dtype="f8",
-            chunks=(1, Y_len,1, 2)  # optimize for row-wise access
+            chunks=(1, Y_len,1, 1, 2)  # optimize for row-wise access
         )
 
         with mpr.Pool(processes=num_processes or mpr.cpu_count()) as pool:
-            for count, (i, j, k, re, im) in enumerate(pool.imap_unordered(_worker, tasks, chunksize=100), 1):
-                dset[i, j, k, 0] = re
-                dset[i, j, k, 1] = im
+            for count, (i, j, k,l, re, im) in enumerate(pool.imap_unordered(_worker, tasks, chunksize=100), 1):
+                dset[i, j, k,l, 0] = re
+                dset[i, j, k,l, 1] = im
 
                 if count % 10000 == 0 or count == total_points:
                     logger.info(f" {count}/{total_points} results written...")

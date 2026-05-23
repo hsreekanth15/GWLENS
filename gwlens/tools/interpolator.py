@@ -31,7 +31,7 @@ def interpolate():
     #Reading Interpolation Data
 
     #Valid lens models
-    valid_lens_models = ['point', 'sis' ,'nfw', 'powerlaw']
+    valid_lens_models = ['point', 'sis' ,'nfw', 'powerlaw','dpbh']
 
     n_parallel = int(config['Interpolation']['n-parallel'])
 
@@ -85,8 +85,12 @@ def interpolate():
         f_pbh_lower = float(config['Interpolation']['f_pbh_lower_limit'])
         f_pbh_upper = float(config['Interpolation']['f_pbh_upper_limit'])
         f_pbh_samples = int(config['Interpolation']['f_pbh_samples'])
-         #Define also mPBH here upon implementation!
         f_pbh = np.linspace(f_pbh_lower,f_pbh_upper,f_pbh_samples)
+
+        m_pbh_lower = float(config['Interpolation']['f_pbh_lower_limit'])
+        m_pbh_upper = float(config['Interpolation']['f_pbh_upper_limit'])
+        m_pbh_samples = int(config['Interpolation']['f_pbh_samples'])
+        m_pbh = np.linspace(f_pbh_lower,f_pbh_upper,f_pbh_samples)
 
     
     mp.dps = float(config['Interpolation']['precision'])
@@ -115,7 +119,7 @@ def interpolate():
 
     elif lensmodel == "dpbh":
         print(f"Lens: {lensmodel} ")
-        pbh.compute_pbh_lens_grid(w,y,f_pbh,output_path,num_processes = n_parallel)
+        pbh.compute_pbh_lens_grid(w,y,f_pbh,m_pbh,output_path,num_processes = n_parallel)
 
 
 

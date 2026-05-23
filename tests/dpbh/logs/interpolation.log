@@ -1,0 +1,23 @@
+2026-05-22 21:20:49 [INFO]  Output file: dpbh/interpolation/result.hdf5
+2026-05-22 21:20:49 [INFO]  Grid size: 1000 × 1 × 1 → 1000 points
+2026-05-22 21:20:49 [INFO] Launching single node parallel computation...
+2026-05-22 21:20:49 [WARNING] This may take a while for large grids. Monitor progress in the logs.
+2026-05-22 21:20:49 [WARNING] MPI parallelization is not implemented in this function; it uses multiprocessing on a single node.
+2026-05-22 21:23:44 [INFO]  Output file: dpbh/interpolation/result.hdf5
+2026-05-22 21:23:44 [INFO]  Grid size: 1000 × 1 × 1 → 1000 points
+2026-05-22 21:23:44 [INFO] Launching single node parallel computation...
+2026-05-22 21:23:44 [WARNING] This may take a while for large grids. Monitor progress in the logs.
+2026-05-22 21:23:44 [WARNING] MPI parallelization is not implemented in this function; it uses multiprocessing on a single node.
+2026-05-22 21:25:31 [INFO]  Output file: dpbh/interpolation/result.hdf5
+2026-05-22 21:25:31 [INFO]  Grid size: 1000 × 1 × 1 → 1000 points
+2026-05-22 21:25:31 [INFO] Launching single node parallel computation...
+2026-05-22 21:25:31 [WARNING] This may take a while for large grids. Monitor progress in the logs.
+2026-05-22 21:25:31 [WARNING] MPI parallelization is not implemented in this function; it uses multiprocessing on a single node.
+2026-05-22 21:29:35 [INFO]  Output file: dpbh/interpolation/result.hdf5
+2026-05-22 21:29:35 [INFO]  Grid size: 1000 × 1 × 1 → 1000 points
+2026-05-22 21:29:35 [INFO] Launching single node parallel computation...
+2026-05-22 21:29:35 [WARNING] This may take a while for large grids. Monitor progress in the logs.
+2026-05-22 21:29:35 [WARNING] MPI parallelization is not implemented in this function; it uses multiprocessing on a single node.
+2026-05-22 21:30:50 [INFO]  1000/1000 results written...
+2026-05-22 21:30:50 [INFO]  Done in 74.84 seconds
+2026-05-22 21:30:50 [INFO]  Saved to: dpbh/interpolation/result.hdf5
