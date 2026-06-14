@@ -1,3 +1,0 @@
-cpu-bind=MASK - chuck-48, task  0  0 [1851021]: mask 0x20000 set
-/work/sreekanth/codes/GWLENS/gwlens/lens/nfw.py:469: RuntimeWarning: divide by zero encountered in arctanh
-  h = np.arctanh(s) / s
