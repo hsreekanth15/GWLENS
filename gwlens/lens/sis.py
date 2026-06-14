@@ -141,23 +141,85 @@ class SIS(Lens):
         else:
             return {"type": "saddle","Morse":1}
     
-    def Dimensionless_Frequency(self,f, sigma, Dl, Ds):
+    def Dimensionless_Frequency(self,f, sigma, Dl, Ds, Dls,zl=None, zs=None):
 
-        Dl = Dl* (u.kpc)
-        Ds = Ds * (u.kpc)
-        Dls= Ds-Dl
+        #Dl = Dl* (u.kpc)
+        #Ds = Ds * (u.kpc)
+        #Dls= Ds-Dl
         
-        Deff = (Dl*Ds/Dls).to(u.km)
+        Deff = self.effective_distance(Dl=Dl,Dls=Dls, Ds= Ds, zl= zl,zs=zs)
 
-        sigma_v = sigma_v* (u.km/u.s)
+        sigma_v = sigma* (u.km/u.s)
 
         c = 3e+5 * (u.km/u.s) # in km/s  
         f = f*(1/u.s)
 
-        w  = 32* np.pi**3  * sigma**4 *Deff * f/(c**5)
+        w  = 32* np.pi**3  * sigma_v**4 *Deff * f/(c**5)
         return w.value
 
-    
+    def effective_distance(self, Dl=None, Dls=None, Ds=None, zs=None, cosmo=None):
+        """
+        Compute the effective lensing distance: Deff = Dl * Dls / Ds
+
+        Two modes:
+        ─────────────────────────────────────────────────────────────────
+        1. NEARBY  (zl = 0 or low-z): provide distances explicitly.
+        All three must be astropy Quantities with distance units.
+
+        Example:
+            halo.effective_distance(Dl=100*u.kpc, Dls=50*u.kpc, Ds=130*u.kpc)
+
+        2. COSMOLOGICAL (zl > 0): provide only the source redshift zs.
+        Angular diameter distances are computed from self.zl and zs.
+        Optionally pass a custom astropy cosmology object.
+
+        Example:
+            halo.effective_distance(zs=1.5)
+            halo.effective_distance(zs=1.5, cosmo=my_cosmo)
+        ─────────────────────────────────────────────────────────────────
+        Returns: Deff in kpc
+        """
+
+        if Dl is not None or Dls is not None or Ds is not None:
+            # ── Mode 1: Explicit distances ──────────────────────────────
+            missing = [n for n, v in [("Dl", Dl), ("Dls", Dls), ("Ds", Ds)] if v is None]
+            if missing:
+                raise ValueError(f"Explicit mode requires all three distances. Missing: {missing}")
+            
+            for name, val in [("Dl", Dl), ("Dls", Dls), ("Ds", Ds)]:
+                if not isinstance(val, u.Quantity):
+                    raise TypeError(f"{name} must be an astropy Quantity (e.g. 100*u.kpc). Got: {type(val)}")
+            
+            return (Dl.to(u.kpc) * Dls.to(u.kpc) / Ds.to(u.kpc)).to(u.kpc)
+
+        elif zs is not None:
+            # ── Mode 2: Redshift-based ──────────────────────────────────
+            if self.zl == 0:
+                raise ValueError(
+                    "zl = 0: angular diameter distances are undefined. "
+                    "Provide Dl, Dls, Ds explicitly instead."
+                )
+            if zs <= self.zl:
+                raise ValueError(f"Source redshift zs={zs} must be greater than lens redshift zl={self.zl}")
+
+            if cosmo is None:
+                cosmo = FlatLambdaCDM(
+                    H0=self.H0.to(u.km / u.s / u.Mpc).value,
+                    Om0=0.3
+                )
+
+            Dl  = cosmo.angular_diameter_distance(self.zl).to(u.kpc)
+            Ds  = cosmo.angular_diameter_distance(zs).to(u.kpc)
+            Dls = cosmo.angular_diameter_distance_z1z2(self.zl, zs).to(u.kpc)
+
+            return (Dl * Dls / Ds).to(u.kpc)
+
+        else:
+            raise ValueError(
+                "Provide either:\n"
+                "  - Explicit distances: Dl, Dls, Ds (as astropy Quantities)\n"
+                "  - Source redshift:    zs (float), with zl set in the constructor"
+            )
 
     def dimensionless_time_delay(self, y1, y2, method="analytic"):
         """

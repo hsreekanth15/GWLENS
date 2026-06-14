@@ -1113,7 +1113,7 @@ def compute_nfw_lens_grid(w_values, y_values, rs , hdf5_filename,num_processes=N
     - num_processes (int or None): number of CPU cores to use (default: all)
     """
 
-        #Read the config file
+    #Read the config file
     config = configparser.ConfigParser()
     config.read('parameters.ini')
 

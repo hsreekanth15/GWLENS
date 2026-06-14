@@ -9,6 +9,7 @@ from mpmath import mp,log,sqrt
 from astropy import constants as const
 from astropy import units as u
 from gwlens.tools import logutils
+from functools import partial
 import h5py
 import configparser
 import time
@@ -26,14 +27,16 @@ class PBH:
     Dl    : Quantity  — observer–lens distance   (e.g. 1.0 * u.kpc)
     Ds    : Quantity  — observer–source distance
     Dls   : Quantity  — lens–source distance
+
+    Required enhancement: Incorporate redshift dependent distance evaluation similar to halo.py in tools.
     """
 
-    def __init__(self, m_PBH, f_PBH, Dl= 1 *(u.kpc), Ds=10*(u.kpc), Dls=9*(u.kpc)):
+    def __init__(self, m_PBH, f_PBH, Dl= 1, Ds=10, Dls=9):
         self.m_PBH = float(m_PBH)   # numerical value in M_sun
         self.f_PBH = float(f_PBH)
-        self.Dl    = Dl.to(u.m)
-        self.Ds    = Ds.to(u.m)
-        self.Dls   = Dls.to(u.m)
+        self.Dl    = (Dl*u.kpc).to(u.m)
+        self.Ds    = (Ds*u.kpc).to(u.m)
+        self.Dls   = (Dls*u.kpc).to(u.m)
 
         # Derived — computed once at construction
         self.Rh  = self.proper_size()     # halo radius        [Quantity, pc]
@@ -120,15 +123,31 @@ class PBH:
         """
         amp = solver.Solver_AS(w, y, self.psi)
         return amp
+    
+    def Dimensionless_Frequency(self, f):
+        """
+        Convert physical frequency f (Hz) to dimensionless frequency w.
+        w = 8πGMf/c³, where M is the total lens mass (PBH + minihalo).
+        
+        Redshifts are not included in this conversion, as the distances are fixed and not redshift-dependent in this implementation. 
+        If redshift effects were to be included, the formula would need to be modified to account for the cosmological expansion and 
+        the corresponding redshift of the lens and source.
+
+        """
+        M_total = self.m_PBH #+ self.minihalo_mass()  # Considering only the PBH mass to be consistent with the paper from which the model is adopted.
+        M_kg = (M_total * u.Msun).to(u.kg).value      # Convert to kg
+        w = (8 * mp.pi * const.G.value * M_kg * f) / const.c.value**3
+        return w
 
 
-def _worker(args):
+def _worker(Dl, Ds, Dls,args):
+    "Worker function for parallel computation. Unpacks arguments and computes amplification."
     i, j, k,l, w, y, f_pbh,m_pbh = args
-    pbh = PBH(m_PBH=m_pbh,f_PBH=f_pbh)
+    pbh = PBH(m_PBH=m_pbh,f_PBH=f_pbh, Dl=Dl, Ds=Ds, Dls=Dls)
     val = pbh.amplification(w, y)
     return (i, j, k,l, val.real, val.imag)
 
-def compute_pbh_lens_grid(w_values, y_values,f_pbh_values,m_pbh_values,hdf5_filename, num_processes=None):
+def compute_pbh_lens_grid(w_values, y_values,f_pbh_values,m_pbh_values,Dl,Ds,Dls,hdf5_filename, num_processes=None):
     """
     Computes the PBH lensing amplification factor over a grid
     and stores the result in an HDF5 file.
@@ -136,6 +155,11 @@ def compute_pbh_lens_grid(w_values, y_values,f_pbh_values,m_pbh_values,hdf5_file
     Parameters:
     - w_values (1D np.array): dimensionless frequency array
     - y_values (1D np.array): impact parameter array
+    - f_pbh_values (1D np.array): PBH fraction array
+    - m_pbh_values (1D np.array): PBH mass array
+    - Dl (Astropy quantity): Lens distance
+    - Ds (Astropy quantity): Source distance
+    - Dls (Astropy quantity): Lens-source distance
     - hdf5_filename (str): path to output HDF5 file
     - num_processes (int or None): number of CPU cores to use (default: all)
     """
@@ -166,6 +190,10 @@ def compute_pbh_lens_grid(w_values, y_values,f_pbh_values,m_pbh_values,hdf5_file
     logger.warning("This may take a while for large grids. Monitor progress in the logs.")
     logger.warning("MPI parallelization is not implemented in this function; it uses multiprocessing on a single node.")
     
+
+    worker_with_params = partial(_worker, Dl, Ds, Dls)
+
+
     start_time = time.time()
 
 
@@ -183,7 +211,7 @@ def compute_pbh_lens_grid(w_values, y_values,f_pbh_values,m_pbh_values,hdf5_file
         )
 
         with mpr.Pool(processes=num_processes or mpr.cpu_count()) as pool:
-            for count, (i, j, k,l, re, im) in enumerate(pool.imap_unordered(_worker, tasks, chunksize=100), 1):
+            for count, (i, j, k,l, re, im) in enumerate(pool.imap_unordered(worker_with_params, tasks), 1):
                 dset[i, j, k,l, 0] = re
                 dset[i, j, k,l, 1] = im
 
