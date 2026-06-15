@@ -13,9 +13,12 @@ dependencies = ["numpy",
 "astropy",
 "mpmath",
 "tqdm",
-"matplotlib"]
+"matplotlib",
+"bilby",
+"bilby_pipe"]
 
 [project.scripts]
 gwlens_interpolate = "gwlens.tools.interpolator:interpolate"
 gwlens_microlensing = "gwlens.tools.executor:execute"
 gwlens_generate_default_ini = "gwlens.tools.generate_ini:main"
+gwlens_pipe = "gwlens.pe.main:main"
