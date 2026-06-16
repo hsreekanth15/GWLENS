@@ -1,4 +1,5 @@
 import bilby_pipe.parser
+from bilby_pipe.parser import StoreBoolean 
 
 
 def create_parser(top_level=True):
@@ -11,8 +12,8 @@ def create_parser(top_level=True):
 
     group.add("--lens-model", type=str,default=None,help=("Name of the lens model used in the analysis for GWLENS"))
     group.add("--lens-lookup-table",type=str,default=None,help=("Path to amplification factor lookup-table in .hdf5"))
-    group.add("--lensed-injection", action="store_true",default=True, help="If True, inject with the lensed waveform for the chosen lens model and injection-frequency-domain-waveform and approximant. If False, it is left to default unlensed")
-    group.add("--lensed-recovery",action="store_true",default=True, help= "If True: recovery with lensed waveform, If False, frequency-domain-source-model is left as it is (unlensed case)")
+    group.add("--lensed-injection", action=StoreBoolean,default=False, help="If True, inject with the lensed waveform for the chosen lens model and injection-frequency-domain-waveform and approximant. If False, it is left to default unlensed")
+    group.add("--lensed-recovery",action=StoreBoolean,default=False, help= "If True: recovery with lensed waveform, If False, frequency-domain-source-model is left as it is (unlensed case)")
 
 
     return parser
