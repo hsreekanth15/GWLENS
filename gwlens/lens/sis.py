@@ -142,13 +142,13 @@ class SIS(Lens):
         else:
             return {"type": "saddle","Morse":1}
     
-    def Dimensionless_Frequency(self,f, sigma, Dl, Ds, Dls,zl=None, zs=None):
+    def Dimensionless_Frequency(self,f, sigma, Dl=None, Ds=None, Dls=None,zL=None, zS=None):
 
         #Dl = Dl* (u.kpc)
         #Ds = Ds * (u.kpc)
         #Dls= Ds-Dl
         
-        Deff = self.effective_distance(Dl=Dl,Dls=Dls, Ds= Ds, zl= zl,zs=zs)
+        Deff = self.effective_distance(Dl=Dl,Dls=Dls, Ds= Ds, zL= zL,zS=zS)
 
         sigma_v = sigma* (u.km/u.s)
 
