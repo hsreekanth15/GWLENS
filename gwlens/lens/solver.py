@@ -1,0 +1,216 @@
+import numpy as np
+import time
+import multiprocessing as mpr
+import h5py
+import os
+import configparser
+import logging
+from gwlens.tools import logutils
+from mpmath import mp,mpf, mpc, sqrt, exp, besselj, quad, log
+
+
+logger = logging.getLogger("nfw_interpolator")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S")
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+
+
+
+mp.dps = 50  # set precision to 50 decimal places (arbitrary precision)
+eps = 1e-3  # relative accuracy tolerance
+
+    
+#Define it when running the code...
+def func(x, w, y, psi, **kwargs):
+    
+    
+    sqrt2x = sqrt(2 * x)
+    arg_bessel = w * y * sqrt2x
+    bessel_val = besselj(0, arg_bessel)
+    psi_val = psi(sqrt2x,**kwargs)
+    return bessel_val * exp(-1j * w * psi_val)
+
+def func2(x, w, y, psi,**kwargs):
+    return func(x, w, y,psi,**kwargs) * exp(1j * w * x)
+
+def dfunc(x, w, y,psi,**kwargs):
+    sqrt2x = sqrt(2 * x)
+    psi_val = psi(sqrt2x, **kwargs)
+    J1 = besselj(1, w * y * sqrt2x)
+    prefactor = -w * y / sqrt2x
+    return prefactor * J1 * exp(-1j * w * psi_val) - (1j * w / (2 * x)) * func(x, w, y,psi,**kwargs)
+
+def ddfunc(x, w, y,psi,**kwargs):
+    sqrt2x = sqrt(2 * x)
+    psi_val = psi(sqrt2x,**kwargs)
+    
+    
+    term1 = (w * y) / (2 * x * sqrt2x) * (2 + 1j * w) * besselj(1, w * y * sqrt2x) * exp(-1j * w * psi_val)
+    term2 = -1 / (2 * x) * (w**2 * y**2 - 1j * w / x) * func(x, w, y,psi,**kwargs)
+    term3 = -1j * w / (2 * x) * dfunc(x, w, y,psi,**kwargs)
+    return term1 + term2 + term3
+
+def Solver_AS(w, y, psi,**kwargs):
+    w = mpf(w)
+    y = mpf(y)
+     
+    # Convert each kwargs to mpf (or mpc if needed)
+    kwargs_mpf = {}
+    for k, v in kwargs.items():
+        if isinstance(v, complex):
+            kwargs_mpf[k] = mpc(v)
+        else:
+            kwargs_mpf[k] = mpf(v)
+
+    a = mpf(0.00001)
+
+    if w < 1 :
+        b = mpf(100) / w
+    elif 1 < w < 500:
+        b = mpf(1000)/w 
+    else: b = mpf(10000)/w   
+    
+    
+    # mpmath.quad with complex integrand
+    zz = quad(lambda x: func2(x, w, y, psi,**kwargs_mpf), [a, b], error=True, maxdegree=10)
+    zz_val = zz[0]  # integral value
+    
+    # Add tail correction terms (at b)
+    tail = (-func(b, w, y,psi,**kwargs_mpf) / (1j * w) * exp(1j * w * b)
+            - dfunc(b, w, y,psi,**kwargs_mpf) / (w**2) * exp(1j * w * b)
+            + ddfunc(b, w, y, psi,**kwargs_mpf) / (1j * w**3) * exp(1j * w * b))
+    
+    zz_val += tail
+        
+    ampfac= -1j * w * exp(0.5 * 1j * w * y**2) * zz_val
+    return complex(round(ampfac.real, 6), round(ampfac.imag, 6))
+
+
+def GO(w,timedelay,magnification,MorseIndex):
+    F = np.zeros_like(w, dtype=np.complex128)
+    for i in range(len(magnification)):
+        F +=np.sqrt(np.abs(magnification[i]))*np.exp(1j*(w*timedelay[i]-0.5*np.pi*MorseIndex[i]))
+    return F
+
+
+
+    
+
+
+def amplification(w_values,y_values,psi,num_processes=4,**kwargs):
+
+    """
+    
+    
+    """
+
+    W_len = len(w_values)
+    Y_len = len(y_values)
+    total_points = W_len * Y_len
+
+    logger.info(f" Grid size: {W_len} * {Y_len} → {total_points} points")
+    logger.info(f"Launching parallel computation with {num_processes} tasks")
+    results = np.zeros((W_len, Y_len, 2), dtype=np.float64) 
+    tasks = [(i, j, w_values[i], y_values[j],psi,kwargs ) for i in range(W_len) for j in range(Y_len)]
+    
+    with mpr.Pool(processes=num_processes or mpr.cpu_count()) as pool:
+            for count, (i, j, re, im) in enumerate(pool.imap_unordered(_worker, tasks, chunksize=100), 1):
+                results[i, j, 0] = re
+                results[i, j, 1] = im
+
+
+    print("Completed")
+    return results
+
+
+
+
+
+
+## Below code is for python multiprocessing...
+
+def _worker(args):
+    i, j, w, y,psi,kwargs = args
+    val = amplification_factor(w, y, psi,**kwargs)
+    return i, j, val.real, val.imag
+
+
+
+def compute_lens_grid(w_values, y_values,psi, hdf5_filename,num_processes=None,**kwargs):
+    """
+    Computes the Point(w, y) complex amplification factor over a grid
+    and stores the result in an HDF5 file.
+
+    Parameters:
+    - w_values (1D np.array): dimensionless frequency array
+    - y_values (1D np.array): impact parameter array
+    - hdf5_filename (str): path to output HDF5 file
+    - num_processes (int or None): number of CPU cores to use (default: all)
+    """
+
+    #Read the config file
+    config = configparser.ConfigParser()
+    config.read('parameters.ini')
+
+    # Setup logging
+    logger = logging.getLogger("compute_logger")
+    logger.setLevel(logging.INFO)
+
+
+    #Store result
+    output_folder = config['Output']['outdir']
+
+    logger = logutils.setup_logger(output_folder=output_folder,logger_name="General Purpose Lens Grid")
+
+    W_len = len(w_values)
+    Y_len = len(y_values)
+    total_points = W_len * Y_len
+
+    # Create task list
+    tasks = [(i, j, w_values[i], y_values[j], amp, core, p ) for i in range(W_len) for j in range(Y_len)]
+
+    logger.info(f" Output file: {hdf5_filename}")
+    logger.info(f" Grid size: {W_len} × {Y_len} → {total_points} points")
+    logger.info(f"Launching parallel computation with {num_processes} tasks")
+
+    start_time = time.time()
+
+    with h5py.File(hdf5_filename, "w") as h5file:
+        h5file.create_dataset("w_values", data=w_values)
+        h5file.create_dataset("y_values", data=y_values)
+        dset = h5file.create_dataset(
+            "results",
+            shape=(W_len, Y_len, 2),
+            dtype="f8",
+            chunks=(1, Y_len, 2)  # optimize for row-wise access
+        )
+
+        with mpr.Pool(processes=num_processes or mpr.cpu_count()) as pool:
+            for count, (i, j, re, im) in enumerate(pool.imap_unordered(_worker, tasks, chunksize=100), 1):
+                dset[i, j, 0] = re
+                dset[i, j, 1] = im
+
+                if count % 100 == 0 or count == total_points:
+                    logger.info(f" {count}/{total_points} results written...")
+
+        h5file.flush()
+
+    end_time = time.time()
+    logger.info(f" Done in {end_time - start_time:.2f} seconds")
+    logger.info(f" Saved to: {hdf5_filename}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+

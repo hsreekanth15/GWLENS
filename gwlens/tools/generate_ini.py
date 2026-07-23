@@ -7,7 +7,7 @@ def write_parameters_ini(output_file="parameters.ini"):
 
 # Gravitational wave frequency of the source
 frequency = 100
-#Ds : Distance to lens in kpc
+#Ds : Distance to source in kpc
 Ds = 16
 
 #*****************************************#
@@ -20,7 +20,8 @@ lensmodel = point
 lensmass = 1000 
 #Dl :  Distance to lens in kpc
 Dl = 8
-
+#Distance between lens and source in kpc (might be modified in the future to be computed from Dl and Ds or redshift)
+Dls = 8
 #*****************************************#
 [Microlens]
 #*****************************************#
@@ -50,12 +51,21 @@ outdir = outdir
 generate_plots = True
 
 #*****************************************#
+[Inference] 
+#*****************************************#
+recovery_lensmodel = point
+recovery_lens_table = #path/to/lens/table.hdf5
+injection_lensmodel = point
+injection_lens_table = #path/to/lens/table.hdf5
+
+#*****************************************#
 [Interpolation]
 #*****************************************#
 
 filename = result_point
 lensmodel = point
 n-parallel = 4
+precision = 50
 
 dimensionless_frequency_lower_limit =  0.00001
 dimensionless_frequency_upper_limit =  100
@@ -72,6 +82,17 @@ scale_radius_samples = 2
 powerlaw_coreradius = 0.1
 powerlaw_amplitude = 1.0
 powerlaw_exponent = 1.0
+
+f_pbh_lower_limit = 0.5
+f_pbh_upper_limit = 1.0
+f_pbh_samples = 1.0
+
+m_pbh_lower_limit =  10
+m_pbh_upper_limit = 1000
+m_pbh_samples = 1
+
+
+
 """
     with open(output_file, "w") as f:
         f.write(content)

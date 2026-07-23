@@ -14,6 +14,8 @@ M_sun = M_sun.value
 
 def EinsteinCrossingTime(Dl,Ds,v,M):
     """
+    Computes the Einstein Crossing time used in Microlensing analysis
+
     Parameters:
     
     Dl :  Distance to lens in kpc
@@ -30,10 +32,40 @@ def EinsteinCrossingTime(Dl,Ds,v,M):
     return te
 
 def RelativeVelocity(Dl,Ds,vS,vL,vO):
+
+    """
+    Computes the relative velocity of the lensing system (Source, Lens and Observer)
+    Based on eq.10 in https://doi.org/10.3847/1538-4357/ab1087 
+
+    Parameters:
+
+    Dl: Distance to the lens in kpc
+    Ds: Distance to source in kpc
+    vs: Velocity of the source
+    vL: Velocity of the lens
+    vO:  Velocity of the observer
+
+    Returns the relative velocity in same units as the velocities of the source, lens and observer
+    """
+
     x = Ds/Dl
     return vS - x*vL + (x-1)*vO
     
 def MicrolensingImpactparameter(t,y0,t0,tE):
+    """
+    Computes the Microlensing impact parameter based on Einstein crossing time
+
+    Parameters:
+
+    tE :  The Einstein Crossing Time in days
+    t: time in days
+    y0:  Closest impact parameter
+    t0: Day on which the maximum aplification is observed 
+ 
+    Returns: An array of dimensionless impact parameter values. Spans in the range [-0.5,0.5]. The extreme
+    values correspond to the left and right edges of the Einstein Ring.
+
+    """
     x = (t-t0)/tE
     y = np.sqrt(y0**2 + x**2)
     return y    

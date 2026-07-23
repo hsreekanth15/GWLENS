@@ -1,0 +1,225 @@
+#author : Sreekanth Harikumar
+#A class for Primodial DM mini halo 
+# See https://arxiv.org/pdf/2303.17601 and references there in for more details
+
+from .base import Lens
+from astropy import units as u
+from gwlens.lens import solver
+from mpmath import mp,log,sqrt
+from astropy import constants as const
+from astropy import units as u
+from gwlens.tools import logutils
+from functools import partial
+import h5py
+import configparser
+import time
+import multiprocessing as mpr
+
+    
+class PBH:
+    """
+    Dressed PBH gravitational lens: point mass + dark matter minihalo.
+
+    Parameters
+    ----------
+    m_PBH : float     — PBH mass in solar masses
+    f_PBH : float     — fraction of dark matter in PBHs  (0 < f_PBH ≤ 1)
+    Dl    : Quantity  — observer–lens distance   (e.g. 1.0 * u.kpc)
+    Ds    : Quantity  — observer–source distance
+    Dls   : Quantity  — lens–source distance
+
+    Required enhancement: Incorporate redshift dependent distance evaluation similar to halo.py in tools.
+    """
+
+    def __init__(self, m_PBH, f_PBH, Dl= 1, Ds=10, Dls=9):
+        self.m_PBH = float(m_PBH)   # numerical value in M_sun
+        self.f_PBH = float(f_PBH)
+        self.Dl    = (Dl*u.kpc).to(u.m)
+        self.Ds    = (Ds*u.kpc).to(u.m)
+        self.Dls   = (Dls*u.kpc).to(u.m)
+
+        # Derived — computed once at construction
+        self.Rh  = self.proper_size()     # halo radius        [Quantity, pc]
+        self.xi0 = self.einstein_radius() # physical Einstein radius [Quantity, pc]
+
+    # ── Halo structure ─────────────────────────────────────────────────────
+
+    def proper_size(self):
+        """
+        Virial radius of the PBH minihalo R_h  [parsec].
+        Urrutia+2023.
+        """
+        return (14.0 * self.m_PBH**(1/3)
+                * min(1.0, 1e-3 * self.f_PBH**(-4/3))
+                * u.pc)
+
+    def minihalo_mass(self):
+        """Minihalo mass M_h  [solar masses, float]."""
+        return ((1.0 - self.f_PBH) * self.m_PBH
+                * min(50.0, 0.28 / self.f_PBH))
+
+    # ── Einstein radius ────────────────────────────────────────────────────
+
+    def einstein_radius(self):
+        """
+        Physical Einstein radius  ξ₀ = D_L · θ_E  [parsec], full units.
+
+        G=c=1  →  θ_E² = 4M · D_LS / (D_L D_S)
+        Full   →  θ_E² = (4GM/c²) · D_LS / (D_L D_S)   ← used here
+
+        The factor G/c² ≈ 7.4×10⁻²⁸ m kg⁻¹ is the only place the unit
+        system enters; everything else is already dimensionless.
+        """
+        m_kg   = (self.m_PBH * u.Msun).to(u.kg)
+        xi0_sq = (4.0 * const.G * m_kg / const.c**2) * (self.Dl * self.Dls / self.Ds)
+        xi0_sq_decomposed = xi0_sq.decompose()
+        xi0_value = sqrt(xi0_sq_decomposed.value)
+        return (xi0_value * xi0_sq_decomposed.unit**0.5).to(u.pc)
+
+    # ── Lensing potentials ─────────────────────────────────────────────────
+
+    def psi_point(self, x):
+        """
+        x will come in as mpf from mp.quad().
+        Keep it in mpmath throughout.
+        """
+        # Don't convert — x is already mpf from quad()
+        if x <= 0:  # Works fine with mpf
+            raise ValueError("x must be strictly positive")
+        return log(x)  # ✓ Returns high-precision result
+
+    def psi_halo(self, x):
+        """Same — x is already mpf from quad()"""
+
+    
+        m_ratio = self.m_PBH                                     # m_PBH / M_sun
+        R_ratio = (self.Rh / (1.0 * u.pc)).decompose().value    # R_h   / pc
+
+        prefactor = (12.0 * (1.0 - self.f_PBH)
+                     * m_ratio**(1/4)
+                     * R_ratio**(3/4))
+
+        # Use mpmath conditionals instead of NumPy where()
+        inner = (x * self.xi0 / self.Rh).decompose().value
+        
+        if inner <= 0:
+            bracket = mp.mpf(0)
+        elif inner <= 1:
+            bracket = inner**(mp.mpf(3)/mp.mpf(4))
+        else:
+            bracket = 1 + (mp.mpf(3)/mp.mpf(4)) * log(inner)
+        
+        return prefactor * bracket  # ✓ High precision preserved
+
+    def psi(self, x):
+        """
+        Total lensing potential  ψ(x) = ψ_PM(x) + ψ_h(x)  [dimensionless].
+        """
+        return self.psi_point(x) + self.psi_halo(x)
+    
+    def amplification(self, w, y):
+        """
+        Arbitrary precision calculation of the amplification factor F(w, y) using mpmath's quad()
+        """
+        amp = solver.Solver_AS(w, y, self.psi)
+        return amp
+    
+    def Dimensionless_Frequency(self, f):
+        """
+        Convert physical frequency f (Hz) to dimensionless frequency w.
+        w = 8πGMf/c³, where M is the total lens mass (PBH + minihalo).
+        
+        Redshifts are not included in this conversion, as the distances are fixed and not redshift-dependent in this implementation. 
+        If redshift effects were to be included, the formula would need to be modified to account for the cosmological expansion and 
+        the corresponding redshift of the lens and source.
+
+        """
+        M_total = self.m_PBH #+ self.minihalo_mass()  # Considering only the PBH mass to be consistent with the paper from which the model is adopted.
+        M_kg = (M_total * u.Msun).to(u.kg).value      # Convert to kg
+        w = (8 * mp.pi * const.G.value * M_kg * f) / const.c.value**3
+        return w
+
+
+def _worker(Dl, Ds, Dls,args):
+    "Worker function for parallel computation. Unpacks arguments and computes amplification."
+    i, j, k,l, w, y, f_pbh,m_pbh = args
+    pbh = PBH(m_PBH=m_pbh,f_PBH=f_pbh, Dl=Dl, Ds=Ds, Dls=Dls)
+    val = pbh.amplification(w, y)
+    return (i, j, k,l, val.real, val.imag)
+
+def compute_pbh_lens_grid(w_values, y_values,f_pbh_values,m_pbh_values,Dl,Ds,Dls,hdf5_filename, num_processes=None):
+    """
+    Computes the PBH lensing amplification factor over a grid
+    and stores the result in an HDF5 file.
+
+    Parameters:
+    - w_values (1D np.array): dimensionless frequency array
+    - y_values (1D np.array): impact parameter array
+    - f_pbh_values (1D np.array): PBH fraction array
+    - m_pbh_values (1D np.array): PBH mass array
+    - Dl (Astropy quantity): Lens distance
+    - Ds (Astropy quantity): Source distance
+    - Dls (Astropy quantity): Lens-source distance
+    - hdf5_filename (str): path to output HDF5 file
+    - num_processes (int or None): number of CPU cores to use (default: all)
+    """
+
+    #Read the config file
+    config = configparser.ConfigParser()
+    config.read('parameters.ini')
+
+    #Store result
+    output_folder = config['Output']['outdir']
+
+
+    # Setup logging
+    logger = logutils.setup_logger(output_folder, logger_name="Dressed_PBH_amplification_logger")
+
+
+    W_len = len(w_values)
+    Y_len = len(y_values)
+    F_PBH_len = len(f_pbh_values)
+    M_PBH_len = len(m_pbh_values)
+    total_points = W_len * Y_len * F_PBH_len *M_PBH_len
+
+    # Create task list
+    tasks = [(i, j, k, l,w_values[i], y_values[j], f_pbh_values[k], m_pbh_values[l]) for i in range(W_len) for j in range(Y_len) for k in range(F_PBH_len) for l in range(M_PBH_len)]
+    logger.info(f" Output file: {hdf5_filename}")
+    logger.info(f" Grid size: {W_len} × {Y_len} × {F_PBH_len} × {M_PBH_len} → {total_points} points")
+    logger.info("Launching single node parallel computation...")
+    logger.warning("This may take a while for large grids. Monitor progress in the logs.")
+    logger.warning("MPI parallelization is not implemented in this function; it uses multiprocessing on a single node.")
+    
+
+    worker_with_params = partial(_worker, Dl, Ds, Dls)
+
+
+    start_time = time.time()
+
+
+
+    with h5py.File(hdf5_filename, "w") as h5file:
+        h5file.create_dataset("w_values", data=w_values)
+        h5file.create_dataset("y_values", data=y_values)
+        h5file.create_dataset("f_pbh_values", data=f_pbh_values)
+        h5file.create_dataset("m_pbh_values", data = m_pbh_values)
+        dset = h5file.create_dataset(
+            "results",
+            shape=(W_len, Y_len,F_PBH_len, M_PBH_len,2),
+            dtype="f8",
+            chunks=(1, Y_len,1, 1, 2)  # optimize for row-wise access
+        )
+
+        with mpr.Pool(processes=num_processes or mpr.cpu_count()) as pool:
+            for count, (i, j, k,l, re, im) in enumerate(pool.imap_unordered(worker_with_params, tasks), 1):
+                dset[i, j, k,l, 0] = re
+                dset[i, j, k,l, 1] = im
+
+                if count % 1000 == 0 or count == total_points:
+                    logger.info(f" {count}/{total_points} results written...")
+
+                    h5file.flush() #flushes data every 1000 points (should make it user controlled instead of manual)
+
+    end_time = time.time()
+    logger.info(f" Done in {end_time - start_time:.2f} seconds")
+    logger.info(f" Saved to: {hdf5_filename}")
