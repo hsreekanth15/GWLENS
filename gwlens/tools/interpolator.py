@@ -3,7 +3,7 @@ import argparse
 import os
 import numpy as np
 from mpmath import mp
-from gwlens.lens import point,sis,nfw,powerlaw,pbh
+from gwlens.lens import point,sis,nfw,powerlaw,pbh, cis, plummersphere
 from gwlens.tools import halo
 from gwlens.tools import logutils
 import matplotlib.pyplot as plt
@@ -46,7 +46,7 @@ def interpolate():
     #Reading Interpolation Data
 
     #Valid lens models
-    valid_lens_models = ['point', 'sis' ,'nfw', 'powerlaw','dpbh']
+    valid_lens_models = ['point', 'sis' ,'nfw', 'powerlaw','dpbh', 'cis', 'plummer']
 
     n_parallel = int(config['Interpolation']['n-parallel'])
 
@@ -132,6 +132,19 @@ def interpolate():
         m_pbh = make_grid(m_pbh_lower,m_pbh_upper,m_pbh_samples,m_pbh_gridspace)
 
         logger.info(f"PBH parameters: f_PBH range=({f_pbh_lower}, {f_pbh_upper}), m_PBH range=({m_pbh_lower}, {m_pbh_upper})")
+        
+    elif lensmodel == "cis":
+
+        amp = float(config['Interpolation']['cis_amplitude'])
+        core = float(config['Interpolation']['cis_coreradius'])
+
+        logger.info(f"CIS parameters: amplitude={amp}, core radius={core}")
+
+    elif lensmodel == "plummer":
+        amp = float(config['Interpolation']['plummer_amplitude'])
+        core = float(config['Interpolation']['plummer_coreradius'])
+
+        logger.info(f"Plummer parameters: amplitude={amp}, core radius={core}")
 
     
     mp.dps = float(config['Interpolation']['precision'])
@@ -161,6 +174,14 @@ def interpolate():
     elif lensmodel == "dpbh":
         print(f"Lens: {lensmodel} ")
         pbh.compute_pbh_lens_grid(w,y,f_pbh,m_pbh,Dl,Ds,Dls,output_path,num_processes = n_parallel)
+        
+    elif lensmodel == "cis":
+        print(f"Lens : {lensmodel}")
+        cis.compute_cis_lens_grid(w, y, amp, core, output_path, num_processes= n_parallel)
+
+    elif lensmodel == "plummer":
+        print(f"Lens : {lensmodel}")
+        plummersphere.compute_plummer_lens_grid(w, y, amp, core, output_path, num_processes= n_parallel)
 
 
 
