@@ -135,10 +135,10 @@ def interpolate():
         
     elif lensmodel == "cis":
 
-        amp = float(config['Interpolation']['cis_amplitude'])
+        #amp = float(config['Interpolation']['cis_amplitude'])
         core = float(config['Interpolation']['cis_coreradius'])
 
-        logger.info(f"CIS parameters: amplitude={amp}, core radius={core}")
+        logger.info(f"CIS parameters: core radius={core}")
 
     elif lensmodel == "plummer":
         amp = float(config['Interpolation']['plummer_amplitude'])
@@ -177,7 +177,7 @@ def interpolate():
         
     elif lensmodel == "cis":
         print(f"Lens : {lensmodel}")
-        cis.compute_cis_lens_grid(w, y, amp, core, output_path, num_processes= n_parallel)
+        cis.compute_cis_lens_grid(w, y,core, output_path, num_processes= n_parallel)
 
     elif lensmodel == "plummer":
         print(f"Lens : {lensmodel}")
