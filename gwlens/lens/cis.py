@@ -100,13 +100,13 @@ def CISAmplification(w, y,core):
 
 
 def _worker(args):
-    i, j, w, y,core = args
+    i, j, k,w, y,core = args
     val = CISAmplification(w, y,core)
-    return i, j, val.real, val.imag
+    return i, j, k, val.real, val.imag
 
 
 
-def compute_cis_lens_grid(w_values, y_values, core , hdf5_filename,num_processes=None):
+def compute_cis_lens_grid(w_values, y_values, core_values , hdf5_filename,num_processes=None):
     """
     Computes the Point(w, y) complex amplification factor over a grid
     and stores the result in an HDF5 file.
@@ -155,13 +155,14 @@ def compute_cis_lens_grid(w_values, y_values, core , hdf5_filename,num_processes
 
     W_len = len(w_values)
     Y_len = len(y_values)
-    total_points = W_len * Y_len
+    C_len = len(core_values)
+    total_points = W_len * Y_len * C_len
 
     # Create task list
-    tasks = [(i, j, w_values[i], y_values[j],core) for i in range(W_len) for j in range(Y_len)]
+    tasks = [(i, j, k, w_values[i], y_values[j],core_values[k]) for i in range(W_len) for j in range(Y_len) for k in range(C_len)]
 
     logger.info(f" Output file: {hdf5_filename}")
-    logger.info(f" Grid size: {W_len} × {Y_len} → {total_points} points")
+    logger.info(f" Grid size: {W_len} × {Y_len} × {C_len} → {total_points} points")
     logger.info(f"Launching parallel computation with {num_processes} tasks")
 
     start_time = time.time()
@@ -169,11 +170,13 @@ def compute_cis_lens_grid(w_values, y_values, core , hdf5_filename,num_processes
     with h5py.File(hdf5_filename, "w") as h5file:
         h5file.create_dataset("w_values", data=w_values)
         h5file.create_dataset("y_values", data=y_values)
+        h5file.create_dataset("core_values",data=core_values)
+
         dset = h5file.create_dataset(
             "results",
-            shape=(W_len, Y_len, 2),
+            shape=(W_len, Y_len,C_len,2),
             dtype="f8",
-            chunks=(1, Y_len, 2)  # optimize for row-wise access
+            chunks=(1, Y_len, 1 , 2)  # optimize for row-wise access
         )
 
         with mpr.Pool(processes=num_processes or mpr.cpu_count()) as pool:
@@ -181,7 +184,7 @@ def compute_cis_lens_grid(w_values, y_values, core , hdf5_filename,num_processes
                 dset[i, j, 0] = re
                 dset[i, j, 1] = im
 
-                if count % 100 == 0 or count == total_points:
+                if count % 1000 == 0 or count == total_points:
                     logger.info(f" {count}/{total_points} results written...")
 
         h5file.flush()

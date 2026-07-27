@@ -70,10 +70,12 @@ precision = 50
 dimensionless_frequency_lower_limit =  0.00001
 dimensionless_frequency_upper_limit =  100
 dimensionless_frequency_samples =  1000
+dimensionless_frequency_gridspace = linear
 
 impact_parameter_lower_limit = 0.01
 impact_parameter_upper_limit  = 1
 impact_parameter_samples = 1
+impact_parameter_gridspace = linear
 
 scale_radius_lower_limit = 2.1
 scale_radius_upper_limit = 3
@@ -86,11 +88,18 @@ powerlaw_exponent = 1.0
 f_pbh_lower_limit = 0.5
 f_pbh_upper_limit = 1.0
 f_pbh_samples = 1.0
+f_pbh_gridspace = linear
 
 m_pbh_lower_limit =  10
 m_pbh_upper_limit = 1000
 m_pbh_samples = 1
+m_pbh_gridspace = linear
 
+cis_coreradius = 0.1
+cis_coreradius_lower_limit = 
+cis_coreradius_upper_limit = 
+cis_coreradius_samples = 
+cis_coreradius_gridspace = linear
 
 
 """
