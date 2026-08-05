@@ -180,9 +180,9 @@ def compute_cis_lens_grid(w_values, y_values, core_values , hdf5_filename,num_pr
         )
 
         with mpr.Pool(processes=num_processes or mpr.cpu_count()) as pool:
-            for count, (i, j, re, im) in enumerate(pool.imap_unordered(_worker, tasks, chunksize=100), 1):
-                dset[i, j, 0] = re
-                dset[i, j, 1] = im
+            for count, (i, j,k, re, im) in enumerate(pool.imap_unordered(_worker, tasks, chunksize=100), 1):
+                dset[i, j,k, 0] = re
+                dset[i, j, k,1] = im
 
                 if count % 1000 == 0 or count == total_points:
                     logger.info(f" {count}/{total_points} results written...")
