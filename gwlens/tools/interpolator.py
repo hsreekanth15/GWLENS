@@ -3,7 +3,7 @@ import argparse
 import os
 import numpy as np
 from mpmath import mp
-from gwlens.lens import point,sis,nfw,powerlaw,pbh, cis, plummersphere
+from gwlens.lens import point,sis,nfw,powerlaw,dpbh, cis, plummersphere
 from gwlens.tools import halo
 from gwlens.tools import logutils
 import matplotlib.pyplot as plt
@@ -179,7 +179,7 @@ def interpolate():
 
     elif lensmodel == "dpbh":
         print(f"Lens: {lensmodel} ")
-        pbh.compute_pbh_lens_grid(w,y,f_pbh,m_pbh,Dl,Ds,Dls,output_path,num_processes = n_parallel)
+        dpbh.compute_pbh_lens_grid(w,y,f_pbh,m_pbh,Dl,Ds,Dls,output_path,num_processes = n_parallel)
         
     elif lensmodel == "cis":
         print(f"Lens : {lensmodel}")
