@@ -147,10 +147,10 @@ def interpolate():
         logger.info(f"Using {coreradius_gridspace} spacing for the coreradius")
  
     elif lensmodel == "plummer":
-        amp = float(config['Interpolation']['plummer_amplitude'])
+        #amp = float(config['Interpolation']['plummer_amplitude'])
         core = float(config['Interpolation']['plummer_coreradius'])
 
-        logger.info(f"Plummer parameters: amplitude={amp}, core radius={core}")
+        logger.info(f"Plummer parameters: core radius={core}")
 
     
     mp.dps = float(config['Interpolation']['precision'])
@@ -187,7 +187,7 @@ def interpolate():
 
     elif lensmodel == "plummer":
         print(f"Lens : {lensmodel}")
-        plummersphere.compute_plummer_lens_grid(w, y, amp, core, output_path, num_processes= n_parallel)
+        plummersphere.compute_plummer_lens_grid(w, y, core, output_path, num_processes= n_parallel)
 
 
 

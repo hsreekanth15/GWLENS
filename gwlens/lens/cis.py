@@ -71,6 +71,12 @@ def ddfunc(x, w, y,core):
 
 def CISAmplification(w, y,core):
     a = 0.00001
+    # Convert inputs to mpmath types
+    w = mpf(w)        # real number
+    y = mpf(y)        # real number
+    core = mpf(core)      # real number
+    a = mpf('0.00001')
+
 
     # Convert inputs to mpmath types
     w = mpf(w)        # real number

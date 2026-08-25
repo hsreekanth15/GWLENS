@@ -7,57 +7,59 @@ import configparser
 import logging
 from mpmath import mp, mpc, sqrt, exp, besselj, quad, log
 
-mp.dps = 25  # set precision to 25 decimal places (arbitrary precision)
+mp.dps = 50  # set precision to 50 decimal places (arbitrary precision)
 eps = 1e-3  # relative accuracy tolerance
 
     
-def psi_plummer(x, amp, core):
-    # x is u = sqrt(2*integration_var); amp = kappa_0, core = xc #check https://arxiv.org/pdf/astro-ph/0602368
-    return 0.5 * amp * core**2 * log(1 + x**2 / core**2)
+def psi_plummer(x, core):
+    # x is u = sqrt(2*integration_var); core = xc #check https://arxiv.org/pdf/astro-ph/0602368
+    return 0.5 * core**2 * log(1 + x**2 / core**2)
 
-def func_plummer(x, w, y, amp, core):
+def func_plummer(x, w, y, core):
     u = sqrt(2 * x)
 
     return (
         besselj(0, w * y * u)
-        * exp(-1j * w * psi_plummer(u, amp, core))
+        * exp(-1j * w * psi_plummer(u, core))
     )
 
-def func2_plummer(x, w, y, amp, core):
-    return func_plummer(x, w, y, amp, core) * exp(1j * w * x)
+def func2_plummer(x, w, y, core):
+    return func_plummer(x, w, y, core) * exp(1j * w * x)
 
-def dfunc_plummer(x, w, y, amp, core):
+def dfunc_plummer(x, w, y, core):
     u = sqrt(2 * x)
-    psi = psi_plummer(u, amp, core)
-    dpsi_dx = amp * core**2 / (core**2 + u**2)   # <- fixed
+    psi = psi_plummer(u, core)
+    #dpsi_dx = core**2 / (core**2 + u**2)   # <- don't need
     J1 = besselj(1, w * y * u)
-    prefactor = -w * y / u
-    return (
-        prefactor * J1 * exp(-1j * w * psi)
-        -1j * w * dpsi_dx * func_plummer(x, w, y, amp, core)
+    return (-w*y/u* J1* exp(-1j*w*psi)- (1j*w/(2*x))* func_plummer(x, w, y, core))
+
+def ddfunc_plummer(x, w, y, core):
+    u = sqrt(2 * x)
+    psi = psi_plummer(u, core)
+    #dpsi_dx = core**2 / (core**2 + u**2)          # <- don't need 
+    #d2psi_dx2 = -2 * core**2 / (core**2 + u**2)**2   # <- don't need
+
+    term1 = (
+        (w*y)/(2*x*u)
+        * (2 + 1j*w)
+        * besselj(1, w*y*u)
+        * exp(-1j*w*psi)
     )
 
-def ddfunc_plummer(x, w, y, amp, core):
-    u = sqrt(2 * x)
-    psi = psi_plummer(u, amp, core)
-    dpsi_dx = amp * core**2 / (core**2 + u**2)          # <- fixed
-    d2psi_dx2 = -2 * amp * core**2 / (core**2 + u**2)**2   # <- fixed
+    term2 = (
+        -1/(2*x)
+        * (w**2*y**2 - 1j*w/x)
+        * func_plummer(x, w, y, core)
+    )
 
-    A = -1j * w * dpsi_dx
-    Aprime = -1j * w * d2psi_dx2
+    term3 = (
+        -1j*w/(2*x)
+        * dfunc_plummer(x, w, y, core)
+    )
 
-    z = w * y * u
-    J1 = besselj(1, z)
+    return term1 + term2 + term3
 
-    f = func_plummer(x, w, y, amp, core)
-    df = dfunc_plummer(x, w, y, amp, core)
-
-    extra_term = 2 * w * y / u**3 * J1 * exp(-1j * w * psi)
-    coeff_f = Aprime - A**2 - (w * y)**2 / u**2
-
-    return coeff_f * f + 2 * A * df + extra_term
-
-def PlummerAmplification(w, y, amp, core):
+def PlummerAmplification(w, y, core):
 
     a = 1e-5
 
@@ -69,45 +71,31 @@ def PlummerAmplification(w, y, amp, core):
         b = 10000 / w
 
     zz = quad(
-        lambda x: func2_plummer(x, w, y, amp, core),
+        lambda x: func2_plummer(x, w, y, core),
         [a, b],
         error=True,
         maxdegree=10
     )
 
-    I = zz[0]
+    zz_val = zz[0]
 
-    tail = (
-        -func_plummer(b, w, y, amp, core)
-        /(1j*w)
-        * exp(1j*w*b)
-
-        -dfunc_plummer(b, w, y, amp, core)
-        /(w**2)
-        * exp(1j*w*b)
-
-        +ddfunc_plummer(b, w, y, amp, core)
-        /(1j*w**3)
-        * exp(1j*w*b)
-    )
-
-    I += tail
-
-    return (
-        -1j*w
-        * exp(0.5j*w*y**2)
-        * I
-    )
+    tail = (-func_plummer(b, w, y, core) / (1j * w) * exp(1j * w * b)
+                - dfunc_plummer(b, w, y, core) / (w**2) * exp(1j * w * b)
+                + ddfunc_plummer(b, w, y, core) / (1j * w**3) * exp(1j * w * b))
+    
+    zz_val += tail
+    
+    return -1j * w * exp(0.5 * 1j * w * y**2) * zz_val
 
 
 def _worker(args):
-    i, j, w, y, amp,core = args
-    val = PlummerAmplification(w, y, amp,core)
+    i, j, w, y,core = args
+    val = PlummerAmplification(w, y, core)
     return i, j, val.real, val.imag
 
 
 
-def compute_plummer_lens_grid(w_values, y_values, amp, core , hdf5_filename,num_processes=None):
+def compute_plummer_lens_grid(w_values, y_values, core , hdf5_filename,num_processes=None):
     """
     Computes the Point(w, y) complex amplification factor over a grid
     and stores the result in an HDF5 file.
@@ -159,7 +147,7 @@ def compute_plummer_lens_grid(w_values, y_values, amp, core , hdf5_filename,num_
     total_points = W_len * Y_len
 
     # Create task list
-    tasks = [(i, j, w_values[i], y_values[j], amp, core) for i in range(W_len) for j in range(Y_len)]
+    tasks = [(i, j, w_values[i], y_values[j], core) for i in range(W_len) for j in range(Y_len)]
 
     logger.info(f" Output file: {hdf5_filename}")
     logger.info(f" Grid size: {W_len} × {Y_len} → {total_points} points")
