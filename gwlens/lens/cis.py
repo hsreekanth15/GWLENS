@@ -6,6 +6,7 @@ import os
 import configparser
 import logging
 from mpmath import mp, mpf, sqrt, exp, besselj, quad, log
+from multiprocessing import Pool, cpu_count
 
 mp.dps = 50  # set precision to 50 decimal places (arbitrary precision)
 eps = 1e-3  # relative accuracy tolerance
@@ -99,12 +100,59 @@ def CISAmplification(w, y,core):
     return -1j * w * exp(0.5 * 1j * w * y**2) * zz_val
 
 
+
+
 def _worker(args):
     i, j, k,w, y,core = args
     val = CISAmplification(w, y,core)
     return i, j, k, val.real, val.imag
 
+def _as_1d(x):
+    """Scalar -> length-1 array; remembers whether it was scalar."""
+    arr = np.atleast_1d(np.asarray(x, dtype=object) if isinstance(x, str) else np.asarray(x))
+    return arr, np.ndim(x) == 0
 
+def CISparallel(w, y, core, processes=None, chunksize=None, squeeze=True):
+    """
+    Evaluate CISAmplification over the full grid w x y x core in parallel.
+
+    Returns a complex ndarray of shape (len(w), len(y), len(core)).
+    With squeeze=True, axes that came from scalar inputs are dropped.
+    """
+    wa, w_scalar = _as_1d(w)
+    ya, y_scalar = _as_1d(y)
+    ca, c_scalar = _as_1d(core)
+
+    nw, ny, nc = len(wa), len(ya), len(ca)
+    total = nw * ny * nc
+    if total == 0:
+        return np.empty((nw, ny, nc), dtype=complex)
+
+    tasks = [
+        (i, j, k, wa[i], ya[j], ca[k])
+        for i in range(nw)
+        for j in range(ny)
+        for k in range(nc)
+    ]
+
+    processes = min(processes or cpu_count(), total)
+    if chunksize is None:
+        chunksize = max(1, total // (processes * 4))
+
+    out = np.empty((nw, ny, nc), dtype=complex)
+
+    with Pool(processes) as pool:
+        for i, j, k, re, im in pool.imap_unordered(_worker, tasks, chunksize=chunksize):
+            out[i, j, k] = complex(re, im)
+
+    if squeeze:
+        axes = tuple(ax for ax, s in enumerate((w_scalar, y_scalar, c_scalar)) if s)
+        if axes:
+            out = out.reshape([d for ax, d in enumerate(out.shape) if ax not in axes])
+        if out.ndim == 0:
+            return complex(out)
+
+    return out
 
 def compute_cis_lens_grid(w_values, y_values, core_values , hdf5_filename,num_processes=None):
     """
