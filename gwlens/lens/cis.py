@@ -6,55 +6,70 @@ import os
 import configparser
 import logging
 from mpmath import mp, mpf, sqrt, exp, besselj, quad, log
+from multiprocessing import Pool, cpu_count
 
 mp.dps = 50  # set precision to 50 decimal places (arbitrary precision)
 eps = 1e-3  # relative accuracy tolerance
 
 
-def psi_cis(x, core):
-    # x is u = sqrt(2*integration_var); core = xc
+def psi(x, core):
+    # x is u = sqrt(2*integration_var); amp = psi0, core = xc
     s = sqrt(core**2 + x**2)
     return s + core * log(2 * core / (s + core))
 
-def func_cis(x, w, y, core):
+def func(x, w, y, core):
     # x: real integration variable (mpf)
     # w, y, amp, core: mpc or mpf
     sqrt2x = sqrt(2 * x)
     arg_bessel = w * y * sqrt2x
     bessel_val = besselj(0, arg_bessel)
-    psi_val = psi_cis(sqrt2x, core)
+    psi_val = psi(sqrt2x, core)
     return bessel_val * exp(-1j * w * psi_val)
 
-def func2_cis(x, w, y, core):
-    return func_cis(x, w, y, core) * exp(1j * w * x)
+def func2(x, w, y,core):
+    return func(x, w, y,core) * exp(1j * w * x)
 
-def dfunc_cis(x, w, y, core):
-    u = sqrt(2 * x)
+def dfunc(x, w, y, core):
+    sqrt2x = sqrt(2 * x)
     #s = sqrt(core**2 + u**2)
-    psi_val = psi_cis(u, core) 
+    #psi_val = amp * s + core * amp * log(2 * core / (s + core))
+    psi_val=psi(sqrt2x, core)
     #dpsi_dx = amp / (s + core)
 
-    J1 = besselj(1, w * y * u)
-    prefactor = -w * y / u
-    return prefactor * J1 * exp(-1j * w * psi_val) - (1j * w /(2*x)) * func_cis(x, w, y, core)
+    J1 = besselj(1, w * y * sqrt2x)
+    prefactor = -w * y / sqrt2x
+    return prefactor * J1 * exp(-1j * w * psi_val) -(1j * w / (2 * x)) * func(x, w, y,core)
 
-def ddfunc_cis(x, w, y, core):
+def ddfunc(x, w, y,core):
     """
     Uses the exact identity: J1'(z) = J0(z) - J1(z)/z
     which is equivalent to: J1'(z) = (J0(z) - J2(z))/2 via the Bessel recurrence: J2(z) = 2 J1(z)/z - J0(z).
     """
-    u = sqrt(2 * x)
+    sqrt2x = sqrt(2 * x)
+    #u = sqrt(2 * x)
     #s = sqrt(core**2 + u**2)
-    psi_val = psi_cis(u, core) 
+    psi_val = psi(sqrt2x, core)
     #dpsi_dx = amp / (s + core)
-    #d2psi_dx2 = -amp / (s * (s + core)**2) #don't need but for reference
+    #d2psi_dx2 = -amp / (s * (s + core)**2) 
 
-    term1 = (w * y) / (2 * x * u) * (2 + 1j * w) * besselj(1, w * y * u) * exp(-1j * w * psi_val)
-    term2 = -1 / (2 * x) * (w**2 * y**2 - 1j * w / x) * func_cis(x, w, y, core)
-    term3 = -1j * w / (2 * x) * dfunc_cis(x, w, y, core)
+    #A = -1j * w * dpsi_dx
+    #Aprime = -1j * w * d2psi_dx2
+
+    #z = w * y * u
+    #J1 = besselj(1, z)
+
+    #f = func(x, w, y, amp, core)    
+    #df = dfunc(x, w, y, amp, core)
+
+    #extra_term = 2 * w * y / u**3 * J1 * exp(-1j * w * psi_val)
+    #coeff_f = Aprime - A**2 - (w * y)**2 / u**2
+    term1 = (w * y) / (2 * x * sqrt2x) * (2 + 1j * w) * besselj(1, w * y * sqrt2x) * exp(-1j * w * psi_val)
+    term2 = -1 / (2 * x) * (w**2 * y**2 - 1j * w / x) * func(x, w, y,core)
+    term3 = -1j * w / (2 * x) * dfunc(x, w, y,core)
     return term1 + term2 + term3
 
-def CISAmplification(w, y, core):
+
+def CISAmplification(w, y,core):
     a = 0.00001
     # Convert inputs to mpmath types
     w = mpf(w)        # real number
@@ -63,36 +78,89 @@ def CISAmplification(w, y, core):
     a = mpf('0.00001')
 
 
+    # Convert inputs to mpmath types
+    w = mpf(w)        # real number
+    y = mpf(y)        # real number
+    core = mpf(core)      # real number
+    a = mpf('0.00001')
+
     if w < 1:
-        b = 400 / w
+        b = mpf('100') / w
     elif 1 < w < 500:
-        b = 4000 / w
+        b = mpf('1000') / w
     else:
-        b = 40000 / w
+        b = mpf('10000') / w
     #zzp = mpc(-1)
 
     # mpmath.quad with complex integrand
-    zz = quad(lambda x: func2_cis(x, w, y, core), [a, b], error=True, maxdegree=15)
+    zz = quad(lambda x: func2(x, w, y, core), [a, b], error=True, maxdegree=10)
     zz_val = zz[0]  # integral value
 
     # Add tail correction terms (at b)
-    tail = (-func_cis(b, w, y, core) / (1j * w) * exp(1j * w * b)
-            - dfunc_cis(b, w, y, core) / (w**2) * exp(1j * w * b)
-            + ddfunc_cis(b, w, y, core) / (1j * w**3) * exp(1j * w * b))
+    tail = (-func(b, w, y, core) / (1j * w) * exp(1j * w * b)
+            - dfunc(b, w, y, core) / (w**2) * exp(1j * w * b)
+            + ddfunc(b, w, y, core) / (1j * w**3) * exp(1j * w * b))
 
     zz_val += tail
 
     return -1j * w * exp(0.5 * 1j * w * y**2) * zz_val
 
 
+
+
 def _worker(args):
-    i, j, w, y,core = args
-    val = CISAmplification(w, y, core)
-    return i, j, val.real, val.imag
+    i, j, k,w, y,core = args
+    val = CISAmplification(w, y,core)
+    return i, j, k, val.real, val.imag
 
+def _as_1d(x):
+    """Scalar -> length-1 array; remembers whether it was scalar."""
+    arr = np.atleast_1d(np.asarray(x, dtype=object) if isinstance(x, str) else np.asarray(x))
+    return arr, np.ndim(x) == 0
 
+def CISparallel(w, y, core, processes=None, chunksize=None, squeeze=True):
+    """
+    Evaluate CISAmplification over the full grid w x y x core in parallel.
 
-def compute_cis_lens_grid(w_values, y_values, core , hdf5_filename,num_processes=None):
+    Returns a complex ndarray of shape (len(w), len(y), len(core)).
+    With squeeze=True, axes that came from scalar inputs are dropped.
+    """
+    wa, w_scalar = _as_1d(w)
+    ya, y_scalar = _as_1d(y)
+    ca, c_scalar = _as_1d(core)
+
+    nw, ny, nc = len(wa), len(ya), len(ca)
+    total = nw * ny * nc
+    if total == 0:
+        return np.empty((nw, ny, nc), dtype=complex)
+
+    tasks = [
+        (i, j, k, wa[i], ya[j], ca[k])
+        for i in range(nw)
+        for j in range(ny)
+        for k in range(nc)
+    ]
+
+    processes = min(processes or cpu_count(), total)
+    if chunksize is None:
+        chunksize = max(1, total // (processes * 4))
+
+    out = np.empty((nw, ny, nc), dtype=complex)
+
+    with Pool(processes) as pool:
+        for i, j, k, re, im in pool.imap_unordered(_worker, tasks, chunksize=chunksize):
+            out[i, j, k] = complex(re, im)
+
+    if squeeze:
+        axes = tuple(ax for ax, s in enumerate((w_scalar, y_scalar, c_scalar)) if s)
+        if axes:
+            out = out.reshape([d for ax, d in enumerate(out.shape) if ax not in axes])
+        if out.ndim == 0:
+            return complex(out)
+
+    return out
+
+def compute_cis_lens_grid(w_values, y_values, core_values , hdf5_filename,num_processes=None):
     """
     Computes the Point(w, y) complex amplification factor over a grid
     and stores the result in an HDF5 file.
@@ -141,13 +209,14 @@ def compute_cis_lens_grid(w_values, y_values, core , hdf5_filename,num_processes
 
     W_len = len(w_values)
     Y_len = len(y_values)
-    total_points = W_len * Y_len
+    C_len = len(core_values)
+    total_points = W_len * Y_len * C_len
 
     # Create task list
-    tasks = [(i, j, w_values[i], y_values[j], core) for i in range(W_len) for j in range(Y_len)]
+    tasks = [(i, j, k, w_values[i], y_values[j],core_values[k]) for i in range(W_len) for j in range(Y_len) for k in range(C_len)]
 
     logger.info(f" Output file: {hdf5_filename}")
-    logger.info(f" Grid size: {W_len} × {Y_len} → {total_points} points")
+    logger.info(f" Grid size: {W_len} × {Y_len} × {C_len} → {total_points} points")
     logger.info(f"Launching parallel computation with {num_processes} tasks")
 
     start_time = time.time()
@@ -155,19 +224,21 @@ def compute_cis_lens_grid(w_values, y_values, core , hdf5_filename,num_processes
     with h5py.File(hdf5_filename, "w") as h5file:
         h5file.create_dataset("w_values", data=w_values)
         h5file.create_dataset("y_values", data=y_values)
+        h5file.create_dataset("core_values",data=core_values)
+
         dset = h5file.create_dataset(
             "results",
-            shape=(W_len, Y_len, 2),
+            shape=(W_len, Y_len,C_len,2),
             dtype="f8",
-            chunks=(1, Y_len, 2)  # optimize for row-wise access
+            chunks=(1, Y_len, 1 , 2)  # optimize for row-wise access
         )
 
         with mpr.Pool(processes=num_processes or mpr.cpu_count()) as pool:
-            for count, (i, j, re, im) in enumerate(pool.imap_unordered(_worker, tasks, chunksize=100), 1):
-                dset[i, j, 0] = re
-                dset[i, j, 1] = im
+            for count, (i, j,k, re, im) in enumerate(pool.imap_unordered(_worker, tasks, chunksize=100), 1):
+                dset[i, j,k, 0] = re
+                dset[i, j, k,1] = im
 
-                if count % 100 == 0 or count == total_points:
+                if count % 1000 == 0 or count == total_points:
                     logger.info(f" {count}/{total_points} results written...")
 
         h5file.flush()
