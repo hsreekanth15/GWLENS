@@ -5,84 +5,80 @@ import h5py
 import os
 import configparser
 import logging
-from mpmath import mp, mpc, sqrt, exp, besselj, quad, log
+from mpmath import mp, mpf, sqrt, exp, besselj, quad, log
 
 mp.dps = 50  # set precision to 50 decimal places (arbitrary precision)
 eps = 1e-3  # relative accuracy tolerance
 
 
-def psi_cis(x, amp, core):
-    # x is u = sqrt(2*integration_var); amp = psi0, core = xc
+def psi_cis(x, core):
+    # x is u = sqrt(2*integration_var); core = xc
     s = sqrt(core**2 + x**2)
-    return amp * s + core * amp * log(2 * core / (s + core))
+    return s + core * log(2 * core / (s + core))
 
-def func_cis(x, w, y, amp, core):
+def func_cis(x, w, y, core):
     # x: real integration variable (mpf)
     # w, y, amp, core: mpc or mpf
     sqrt2x = sqrt(2 * x)
     arg_bessel = w * y * sqrt2x
     bessel_val = besselj(0, arg_bessel)
-    psi_val = psi_cis(sqrt2x, amp, core)
+    psi_val = psi_cis(sqrt2x, core)
     return bessel_val * exp(-1j * w * psi_val)
 
-def func2_cis(x, w, y, amp, core):
-    return func_cis(x, w, y, amp, core) * exp(1j * w * x)
+def func2_cis(x, w, y, core):
+    return func_cis(x, w, y, core) * exp(1j * w * x)
 
-def dfunc_cis(x, w, y, amp, core):
+def dfunc_cis(x, w, y, core):
     u = sqrt(2 * x)
-    s = sqrt(core**2 + u**2)
-    psi_val = amp * s + core * amp * log(2 * core / (s + core))
-    dpsi_dx = amp / (s + core)
+    #s = sqrt(core**2 + u**2)
+    psi_val = psi_cis(u, core) 
+    #dpsi_dx = amp / (s + core)
 
     J1 = besselj(1, w * y * u)
     prefactor = -w * y / u
-    return prefactor * J1 * exp(-1j * w * psi_val) \
-        - 1j * w * dpsi_dx * func_cis(x, w, y, amp, core)
+    return prefactor * J1 * exp(-1j * w * psi_val) - (1j * w /(2*x)) * func_cis(x, w, y, core)
 
-def ddfunc_cis(x, w, y, amp, core):
+def ddfunc_cis(x, w, y, core):
     """
     Uses the exact identity: J1'(z) = J0(z) - J1(z)/z
     which is equivalent to: J1'(z) = (J0(z) - J2(z))/2 via the Bessel recurrence: J2(z) = 2 J1(z)/z - J0(z).
     """
     u = sqrt(2 * x)
-    s = sqrt(core**2 + u**2)
-    psi_val = amp * s + core * amp * log(2 * core / (s + core))
-    dpsi_dx = amp / (s + core)
-    d2psi_dx2 = -amp / (s * (s + core)**2) 
+    #s = sqrt(core**2 + u**2)
+    psi_val = psi_cis(u, core) 
+    #dpsi_dx = amp / (s + core)
+    #d2psi_dx2 = -amp / (s * (s + core)**2) #don't need but for reference
 
-    A = -1j * w * dpsi_dx
-    Aprime = -1j * w * d2psi_dx2
+    term1 = (w * y) / (2 * x * u) * (2 + 1j * w) * besselj(1, w * y * u) * exp(-1j * w * psi_val)
+    term2 = -1 / (2 * x) * (w**2 * y**2 - 1j * w / x) * func_cis(x, w, y, core)
+    term3 = -1j * w / (2 * x) * dfunc_cis(x, w, y, core)
+    return term1 + term2 + term3
 
-    z = w * y * u
-    J1 = besselj(1, z)
-
-    f = func_cis(x, w, y, amp, core)    
-    df = dfunc_cis(x, w, y, amp, core)
-
-    extra_term = 2 * w * y / u**3 * J1 * exp(-1j * w * psi_val)
-    coeff_f = Aprime - A**2 - (w * y)**2 / u**2
-
-    return coeff_f * f + 2 * A * df + extra_term
-
-def CISAmplification(w, y, amp, core):
+def CISAmplification(w, y, core):
     a = 0.00001
+    # Convert inputs to mpmath types
+    w = mpf(w)        # real number
+    y = mpf(y)        # real number
+    core = mpf(core)      # real number
+    a = mpf('0.00001')
+
 
     if w < 1:
-        b = 100 / w
+        b = 400 / w
     elif 1 < w < 500:
-        b = 1000 / w
+        b = 4000 / w
     else:
-        b = 10000 / w
+        b = 40000 / w
     #zzp = mpc(-1)
 
     # mpmath.quad with complex integrand
-    zz = quad(lambda x: func2_cis(x, w, y, amp, core), [a, b], error=True, maxdegree=10)
+    zz = quad(lambda x: func2_cis(x, w, y, core), [a, b], error=True, maxdegree=15)
     zz_val = zz[0]  # integral value
 
     # Add tail correction terms (at b)
-    tail = (-func_cis(b, w, y, amp, core) / (1j * w) * exp(1j * w * b)
-            - dfunc_cis(b, w, y, amp, core) / (w**2) * exp(1j * w * b)
-            + ddfunc_cis(b, w, y, amp, core) / (1j * w**3) * exp(1j * w * b))
+    tail = (-func_cis(b, w, y, core) / (1j * w) * exp(1j * w * b)
+            - dfunc_cis(b, w, y, core) / (w**2) * exp(1j * w * b)
+            + ddfunc_cis(b, w, y, core) / (1j * w**3) * exp(1j * w * b))
 
     zz_val += tail
 
@@ -90,13 +86,13 @@ def CISAmplification(w, y, amp, core):
 
 
 def _worker(args):
-    i, j, w, y, amp,core = args
-    val = CISAmplification(w, y, amp,core)
+    i, j, w, y,core = args
+    val = CISAmplification(w, y, core)
     return i, j, val.real, val.imag
 
 
 
-def compute_cis_lens_grid(w_values, y_values, amp, core , hdf5_filename,num_processes=None):
+def compute_cis_lens_grid(w_values, y_values, core , hdf5_filename,num_processes=None):
     """
     Computes the Point(w, y) complex amplification factor over a grid
     and stores the result in an HDF5 file.
@@ -148,7 +144,7 @@ def compute_cis_lens_grid(w_values, y_values, amp, core , hdf5_filename,num_proc
     total_points = W_len * Y_len
 
     # Create task list
-    tasks = [(i, j, w_values[i], y_values[j], amp, core) for i in range(W_len) for j in range(Y_len)]
+    tasks = [(i, j, w_values[i], y_values[j], core) for i in range(W_len) for j in range(Y_len)]
 
     logger.info(f" Output file: {hdf5_filename}")
     logger.info(f" Grid size: {W_len} × {Y_len} → {total_points} points")

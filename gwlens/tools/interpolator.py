@@ -135,16 +135,16 @@ def interpolate():
         
     elif lensmodel == "cis":
 
-        amp = float(config['Interpolation']['cis_amplitude'])
+        #amp = float(config['Interpolation']['cis_amplitude'])
         core = float(config['Interpolation']['cis_coreradius'])
 
-        logger.info(f"CIS parameters: amplitude={amp}, core radius={core}")
+        logger.info(f"CIS parameters:core radius={core}")
 
     elif lensmodel == "plummer":
-        amp = float(config['Interpolation']['plummer_amplitude'])
+        #amp = float(config['Interpolation']['plummer_amplitude'])
         core = float(config['Interpolation']['plummer_coreradius'])
 
-        logger.info(f"Plummer parameters: amplitude={amp}, core radius={core}")
+        logger.info(f"Plummer parameters: core radius={core}")
 
     
     mp.dps = float(config['Interpolation']['precision'])
@@ -177,11 +177,11 @@ def interpolate():
         
     elif lensmodel == "cis":
         print(f"Lens : {lensmodel}")
-        cis.compute_cis_lens_grid(w, y, amp, core, output_path, num_processes= n_parallel)
+        cis.compute_cis_lens_grid(w, y, core, output_path, num_processes= n_parallel)
 
     elif lensmodel == "plummer":
         print(f"Lens : {lensmodel}")
-        plummersphere.compute_plummer_lens_grid(w, y, amp, core, output_path, num_processes= n_parallel)
+        plummersphere.compute_plummer_lens_grid(w, y, core, output_path, num_processes= n_parallel)
 
 
 
