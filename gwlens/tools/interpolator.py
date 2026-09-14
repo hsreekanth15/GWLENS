@@ -171,7 +171,13 @@ def interpolate():
 
     elif lensmodel == "nfw":
         print(f"Lens : {lensmodel}")
-        nfw.compute_nfw_lens_test(w,y,rs,output_path,num_jobs=n_parallel)
+        if config.getboolean('Interpolation', 'mpi', fallback=False):
+            logger.info("MPI parallelization enabled for NFW lens grid computation.")
+        try:
+            nfw.compute_nfw_lens_grid_mpi(w,y,rs, output_path)
+        except Exception as e:
+            logger.error(f"Error occurred while computing NFW lens grid: {e}")
+            nfw.compute_nfw_lens_test(w,y,rs,output_path,num_jobs=n_parallel)
 
     elif lensmodel == "powerlaw":
         print(f"Lens : {lensmodel}")

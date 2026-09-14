@@ -64,8 +64,9 @@ injection_lens_table = #path/to/lens/table.hdf5
 
 filename = result_point
 lensmodel = point
+mpi = True #if True, the interpolation will be done using MPI parallelization. If False, it will be done using multiprocessing
 n-parallel = 4
-precision = 50
+precision = 20
 
 dimensionless_frequency_lower_limit =  0.00001
 dimensionless_frequency_upper_limit =  100

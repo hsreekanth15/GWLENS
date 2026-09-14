@@ -13,6 +13,7 @@ from scipy.special import factorial as sp_fac
 from astropy.constants import c,G,M_sun
 from joblib import Parallel, delayed
 from mpmath import mp,mpf, mpc, sqrt, exp, besselj, quad,log, atan,atanh
+from mpi4py import MPI
 
 
 
@@ -1241,3 +1242,120 @@ def compute_nfw_lens_test(w_values, y_values, rs_values, hdf5_filename, num_jobs
 
     logger.info(f"✅ Completed in {time.time() - t0:.2f} seconds.")
     logger.info("💾 Interpolation grid saved and ready.")
+
+
+def compute_nfw_lens_grid_mpi(w_values, y_values, rs_values,
+                              hdf5_filename, t_start=None,
+                              compression="gzip"):
+    """
+    NFW(w, y, rs) over a 3D grid, computed with MPI.
+
+    Results are stored as (W_len, Y_len, R_len, 2), where the last
+    axis is [real, imag].
+    """
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+
+    W_len = len(w_values)
+    Y_len = len(y_values)
+    R_len = len(rs_values)
+    total_points = W_len * Y_len * R_len
+
+    if t_start is not None:
+        max_startup = comm.allreduce(time.time() - t_start, op=MPI.MAX)
+    else:
+        max_startup = -1.0
+
+    # ---- logging: rank 0 only ----
+    logger = None
+    if rank == 0:
+        logger = logging.getLogger("compute_logger")
+        logger.setLevel(logging.INFO)
+        logger.handlers.clear()
+
+        try:
+            config = configparser.ConfigParser()
+            config.read("parameters.ini")
+            output_folder = config["Output"]["outdir"]
+        except Exception:
+            output_folder = "."
+
+        log_folder = os.path.join(output_folder, "logs")
+        os.makedirs(log_folder, exist_ok=True)
+
+        fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s",
+                                "%Y-%m-%d %H:%M:%S")
+        fh = logging.FileHandler(os.path.join(log_folder, "interpolation.log"))
+        sh = logging.StreamHandler()
+        fh.setFormatter(fmt)
+        sh.setFormatter(fmt)
+        logger.addHandler(fh)
+        logger.addHandler(sh)
+
+        logger.info(f"Ranks: {size}")
+        logger.info(f"Grid: {W_len} x {Y_len} x {R_len} = {total_points} points")
+        logger.info(f"Tasks per rank: ~{total_points // size}")
+        logger.info(f"mpmath precision: mp.dps = {mp.dps}")
+        logger.info(f"Slowest-rank startup: {max_startup:.1f} s")
+
+    t0 = time.time()
+
+    # ---- mpmath inputs, rebuilt locally on every rank ----
+    w_mp = [mpf(float(w)) for w in w_values]
+    y_mp = [mpf(float(y)) for y in y_values]
+    rs_mp = [mpf(float(r)) for r in rs_values]
+
+    # ---- flatten the 3D index space, then stride ----
+    tasks = [(i, j, k)
+             for i in range(W_len)
+             for j in range(Y_len)
+             for k in range(R_len)]
+    local_tasks = tasks[rank::size]
+
+    local_results = []
+    for i, j, k in local_tasks:
+        amp = nfw.NFW(w_mp[i], y_mp[j], rs_mp[k])      # mpc
+        local_results.append((i, j, k, float(amp.real), float(amp.imag)))
+
+    t_compute = time.time() - t0
+
+    # ---- balance diagnostics ----
+    t_max = comm.allreduce(t_compute, op=MPI.MAX)
+    t_min = comm.allreduce(t_compute, op=MPI.MIN)
+    t_sum = comm.allreduce(t_compute, op=MPI.SUM)
+
+    all_results = comm.gather(local_results, root=0)
+
+    if rank == 0:
+        logger.info(f"Compute  slowest rank: {t_max:.1f} s")
+        logger.info(f"Compute  fastest rank: {t_min:.1f} s")
+        logger.info(f"Compute  mean rank:    {t_sum/size:.1f} s")
+        logger.info(f"Balance efficiency: {100*(t_sum/size)/t_max:.1f} %")
+
+        flat = [item for sub in all_results for item in sub]
+        if len(flat) != total_points:
+            logger.warning(f"Expected {total_points} results, got {len(flat)}")
+
+        # NaN-fill so a missing point is visibly wrong, not silently zero
+        grid = np.full((W_len, Y_len, R_len, 2), np.nan, dtype="f8")
+        for i, j, k, re_, im_ in flat:
+            grid[i, j, k, 0] = re_
+            grid[i, j, k, 1] = im_
+
+        t_write = time.time()
+        with h5py.File(hdf5_filename, "w") as h5:
+            h5.create_dataset("w_values",  data=np.asarray(w_values,  dtype="f8"))
+            h5.create_dataset("y_values",  data=np.asarray(y_values,  dtype="f8"))
+            h5.create_dataset("rs_values", data=np.asarray(rs_values, dtype="f8"))
+            dset = h5.create_dataset(
+                "results",
+                data=grid,
+                chunks=(1, Y_len, R_len, 2),
+                compression=compression,
+            )
+            dset.attrs["axes"] = "w, y, rs, [real|imag]"
+            dset.attrs["mp_dps"] = mp.dps
+
+        logger.info(f"HDF5 write: {time.time() - t_write:.1f} s")
+        logger.info(f"Saved to {hdf5_filename}")
