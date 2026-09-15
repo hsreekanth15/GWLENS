@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - dressed Primodial Black Hole lens model implemented
 - Setup logger function in tools implemented.
 - Source and lens distances added to the parameters.ini file
+- New lens models - Cored Isothermal Sphere, Plummer Sphere
+- MPI parallelization implemented for NFW and CIS
+- Choice of linear and log spacing between points for dimensionless frequency and impact parameters
 
 ### Changed
 - Modification descriptions
@@ -23,7 +26,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Deprecated
 - Deprecation notices
 
-### Security
-- Security fixes
 
 

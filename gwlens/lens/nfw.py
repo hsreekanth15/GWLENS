@@ -1315,7 +1315,7 @@ def compute_nfw_lens_grid_mpi(w_values, y_values, rs_values,
 
     local_results = []
     for i, j, k in local_tasks:
-        amp = nfw.NFW(w_mp[i], y_mp[j], rs_mp[k])      # mpc
+        amp = NFW(w_mp[i], y_mp[j], rs_mp[k])      # mpc
         local_results.append((i, j, k, float(amp.real), float(amp.imag)))
 
     t_compute = time.time() - t0
