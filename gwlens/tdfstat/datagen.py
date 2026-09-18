@@ -3,13 +3,15 @@
 datagen.py - generate ephemeris data for multiple segments and detectors
 
 Python port of datagen.c + get_barycenter.c (Sreekanth Harikumar).
+Adapted from the original C code 
 
 Tasks:
-  - reads a config .ini (sections [general] and [gaussian])
+  - reads a config .ini (section [tdfstat], plus [signal] when write_signal = true)
   - for each segment / detector:
       * picks the PSD file from psd-dict, interpolates it at the band frequency
       * computes the detector ephemeris (DetSSB.bin, rDet.bin, rSSB.bin)
-      * writes a Gaussian xdat_<seg>_<band>.bin time series
+      * writes Gaussian noise to xdat_<seg>_<band>.bin; if write_signal = true,
+        the CW signal (sigen.TimeSeries) is added to the noise before writing
   - advances the GPS time by one sidereal day * nod per segment
 
 Barycentring follows get_barycenter.c exactly: per time sample, XLALBarycenter is
@@ -27,17 +29,25 @@ Run:       python datagen.py config.ini
 """
 
 import argparse
+import ast
+import operator
 import os
 import sys
 import math
 import errno
 import configparser
+from types import SimpleNamespace
 
 import numpy as np
 from scipy.interpolate import CubicSpline
 
 import lal
 import lalpulsar
+
+try:                        # datagen imported as part of a package
+    from .sigen import TimeSeries
+except ImportError:         # run directly: python datagen.py config.ini
+    from sigen import TimeSeries
 
 # ----------------------------------------------------------------------------
 # Constants (mirror the #defines in datagen.c / EphemerisDetector.h)
@@ -65,6 +75,16 @@ _NAMES = [
     "G8", "VL", "BO", "MO", "NC", "EF", "FB", "H1", "H2", "LHO", "LLO",
     "L1", "GEO", "G1", "V1", "VIRGO", "TAMA", "T1",
 ]
+
+# Signal parameters read from the [signal] section (all floats).
+_SIGNAL_KEYS = (
+    "h0", "frequency", "spin_down", "ra", "dec",
+    "wobble_angle", "inclination", "polarization", "reference_phase",
+)
+_SIGNAL_DEFAULTS = {
+    "wobble_angle": math.pi / 2,   # sin^2 = 1, so h0 is the plain amplitude
+    "reference_phase": 0.0,
+}
 
 
 # ----------------------------------------------------------------------------
@@ -168,9 +188,14 @@ def interpolate_psd(filename, freq_query):
 # ----------------------------------------------------------------------------
 # Gaussian data  (generate_gaussian_data)
 # ----------------------------------------------------------------------------
-def generate_gaussian_data(N, amp, sigma, dataout, maskfile=None):
-    """Write N float32 samples amp*N(0, sigma) to dataout; zero where |mask|<1e-30.
-    Returns 0 on success, 1 on failure."""
+def generate_gaussian_data(N, amp, sigma, dataout, maskfile=None, signal=None):
+    """Write N float32 samples amp*N(0, sigma) to the file path `dataout`.
+
+    If `signal` is given (a length-N array in the same units as the noise),
+    it is added to the noise before masking and writing, so the file holds
+    noise + signal. Samples are zeroed where |mask| < 1e-30.
+    Returns 0 on success, 1 on failure.
+    """
     if N <= 0:
         sys.stderr.write(f"Invalid N: {N}\n")
         return 1
@@ -178,6 +203,14 @@ def generate_gaussian_data(N, amp, sigma, dataout, maskfile=None):
     seed = int.from_bytes(os.urandom(4), "little")   # like /dev/urandom seeding
     rng = np.random.default_rng(seed)
     x = (amp * rng.normal(0.0, sigma, size=N)).astype(np.float32)
+
+    if signal is not None:
+        if len(signal) != N:
+            sys.stderr.write(
+                f"Signal length {len(signal)} does not match N = {N}\n"
+            )
+            return 1
+        x += np.asarray(signal, dtype=np.float32)
 
     if maskfile is not None:
         try:
@@ -201,7 +234,8 @@ def generate_gaussian_data(N, amp, sigma, dataout, maskfile=None):
         sys.stderr.write(f"Opening output file: {e}\n")
         return 1
 
-    print(f"Data written to {dataout} ({N} samples)")
+    kind = "noise + signal" if signal is not None else "noise"
+    print(f"Data written to {dataout} ({N} samples, {kind})")
     return 0
 
 
@@ -264,14 +298,18 @@ def get_barycenter(gps1, site, edat, N, dt):
 
 
 def generate_ephemeris_segment(gps_start, ndays, detector_name, output_dir, N, bandwidth, earth_ephem, sun_ephem):
-    """Build DetSSB/rDet/rSSB for one segment+detector and write the .bin files."""
+    """Build DetSSB/rDet/rSSB for one segment+detector and write the .bin files.
+
+    Returns (DetSSB, phir) so the signal generator can reuse them, where DetSSB
+    is the flat (3N,) array in units of dt. Returns None on failure.
+    """
     dt = 1.0 / (2.0 * bandwidth)
 
     detector = get_detector(detector_name)
 
     if mkdir_p(output_dir) != 0:
         sys.stderr.write(f"Failed to create directory {output_dir}\n")
-        return
+        return None
 
     position = get_position(detector)
     elam = position[1]
@@ -302,6 +340,159 @@ def generate_ephemeris_segment(gps_start, ndays, detector_name, output_dir, N, b
         except OSError:
             sys.stderr.write(f"Error opening file {path}\n")
 
+    return DetSSB, phir
+
+
+# ----------------------------------------------------------------------------
+# Signal generation (bridge to sigen.TimeSeries)
+# ----------------------------------------------------------------------------
+def build_detector(det_name, segment, band, ov, gps_start, N, bandwidth, fpo,
+                   DetSSB, phir, strain=None):
+    """Wrap one segment's data in the detector object the original
+    sigen.TimeSeries expects.
+
+    Units: time in seconds since gps_start; DetSSB converted back from units of
+    dt (as stored in DetSSB.bin) to light-seconds and reshaped to (N, 3).
+    With the usual bandwidth = 0.5 Hz, dt = 1 s, so seconds and samples coincide.
+    TimeSeries adds its signal into `strain` in place; with the default (None)
+    that is a zero array, so afterwards it holds the pure signal.
+    """
+    if strain is None:
+        strain = np.zeros(N, dtype=np.float64)
+    dt = 1.0 / (2.0 * bandwidth)
+    latitude, _longitude, _height, gamma = get_position(get_detector(det_name))
+    t = np.arange(N, dtype=np.float64) * dt
+
+    return SimpleNamespace(
+        name=det_name,
+        segment=segment,
+        band=band,
+        overlap=ov,
+        start_time=gps_start,
+        delta_t=dt,
+        duration=N * dt,
+        starting_frequency=fpo,
+        sampling_frequency=1.0 / dt,
+        bandwidth=bandwidth,
+        time_array=t,
+        time_square_array=t ** 2,
+        t_plus_t2_over_2=0.5 * t ** 2,
+        ephemeris=SimpleNamespace(DetSSB=DetSSB.reshape(N, 3) * dt, phir=phir),
+        # sigen reads this attribute as the site angle in the JKS a(t), b(t)
+        # formulas, where the angle is the detector LATITUDE. The attribute name
+        # is kept for compatibility; the value passed is the latitude.
+        longitude_radians=latitude,
+        orientation_radians=gamma,
+        time_domain_strain=strain,
+    )
+
+
+# Safe parsing of numbers such as "np.pi/2" in the .ini file (no eval()).
+_EXPR_CONSTANTS = {"pi": math.pi, "e": math.e, "tau": math.tau}
+_EXPR_MODULES = ("np", "numpy", "math")
+_EXPR_BINOPS = {
+    ast.Add: operator.add, ast.Sub: operator.sub,
+    ast.Mult: operator.mul, ast.Div: operator.truediv, ast.Pow: operator.pow,
+}
+_EXPR_UNARYOPS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+
+
+def parse_number(text):
+    """Parse a plain number or a simple arithmetic expression into a float.
+
+    Accepts numbers, the constants pi / e / tau (optionally written as np.pi,
+    numpy.pi or math.pi), + - * / ** and parentheses, e.g. "np.pi/2",
+    "-0.25*pi", "1e-24". Anything else raises ValueError.
+    """
+    def _eval(node):
+        if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+            return float(node.value)
+        if isinstance(node, ast.BinOp) and type(node.op) in _EXPR_BINOPS:
+            return _EXPR_BINOPS[type(node.op)](_eval(node.left), _eval(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in _EXPR_UNARYOPS:
+            return _EXPR_UNARYOPS[type(node.op)](_eval(node.operand))
+        if isinstance(node, ast.Name) and node.id in _EXPR_CONSTANTS:
+            return _EXPR_CONSTANTS[node.id]
+        if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                and node.value.id in _EXPR_MODULES and node.attr in _EXPR_CONSTANTS):
+            return _EXPR_CONSTANTS[node.attr]
+        raise ValueError("unsupported expression")
+
+    try:
+        return float(_eval(ast.parse(text.strip(), mode="eval").body))
+    except (SyntaxError, ValueError, ZeroDivisionError, OverflowError) as e:
+        raise ValueError(f"cannot parse {text!r} as a number ({e})") from None
+
+
+def read_signal_params(config):
+    """Read the [signal] section into a dict of floats, or None on error."""
+    if not config.has_section("signal"):
+        sys.stderr.write("write_signal = true but there is no [signal] section.\n")
+        return None
+    sec = config["signal"]
+    params = {}
+    missing = []
+    for key in _SIGNAL_KEYS:
+        if key in sec:
+            try:
+                params[key] = parse_number(sec[key])
+            except ValueError as e:
+                sys.stderr.write(f"[signal] {key}: {e}\n")
+                return None
+        elif key in _SIGNAL_DEFAULTS:
+            params[key] = _SIGNAL_DEFAULTS[key]
+        else:
+            missing.append(key)
+    if missing:
+        sys.stderr.write(f"[signal] section is missing: {', '.join(missing)}\n")
+        return None
+    return params
+
+
+def generate_signal(detector, cw_params, ref_gps_time, einstein_factor):
+    """Generate the CW signal for one segment/detector with the original
+    sigen.TimeSeries and return it (float32) in the same units as the noise.
+
+    [signal] gives the absolute GW frequency [Hz] and spin-down [Hz/s]. They
+    are converted to what the original class expects:
+      * it has no heterodyne, and the data are stored relative to fpo (the
+        band start), so the frequency is taken relative to fpo;
+      * it uses cos(2*phase), so it wants half the GW frequency and spin-down;
+      * it has no h0, so the amplitude h0 / einstein_factor is applied here.
+    """
+    # GW frequency at this segment's start: spin-down evolves it from the
+    # reference time (the first segment), so all segments stay consistent.
+    f_gw = (
+        cw_params["frequency"]
+        + cw_params["spin_down"] * (detector.start_time - ref_gps_time)
+    )
+
+    fpo = detector.starting_frequency
+    if not fpo <= f_gw <= fpo + detector.bandwidth:
+        sys.stderr.write(
+            f"Warning: signal frequency {f_gw:.6f} Hz is outside "
+            f"the band [{fpo:.6f}, {fpo + detector.bandwidth:.6f}] Hz.\n"
+        )
+
+    params = {
+        key: cw_params[key]
+        for key in ("ra", "dec", "wobble_angle", "inclination",
+                    "polarization", "reference_phase")
+    }
+    params["frequency"] = 0.5 * (f_gw - fpo)
+    params["spin_down"] = 0.5 * cw_params["spin_down"]
+
+    signal, _ = TimeSeries(detector).generate_time_domain_signal(**params)
+
+    # The noise is in units of strain / einstein_factor, so the signal must be too.
+    signal = signal * (cw_params["h0"] / einstein_factor)
+
+    print(
+        f"Generated signal for {detector.name} segment {detector.segment} "
+        f"(f = {f_gw:.6f} Hz)"
+    )
+    return signal.astype(np.float32)
+
 
 # ----------------------------------------------------------------------------
 # psd-dict parsing  (get_psd_for_detector)
@@ -329,16 +520,14 @@ def main(argv=None):
 
     parser = argparse.ArgumentParser(description="Generate segments for TDFStat")
     parser.add_argument("config", help="Path to the parameters .ini file containing [tdfstat] section")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     config_path = args.config
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    config = configparser.ConfigParser()
-    config.read(config_path)
-
- 
+    # inline_comment_prefixes lets values carry comments: "ra = 1.2  # rad"
+    config = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
     if not config.read(config_path):
         sys.stderr.write(f"Cannot load configuration file: {config_path}\n")
         return 1
@@ -357,9 +546,13 @@ def main(argv=None):
     output_dir = tdfstat_config.get("output_dir", fallback="./output")
     earth_ephem = tdfstat_config.get("earth-ephem", fallback=None)
     sun_ephem   = tdfstat_config.get("sun-ephem",   fallback=None)
-    
+    write_signal = tdfstat_config.getboolean("write_signal", fallback=False)
+    maskfile = tdfstat_config.get("maskfile", fallback=None)
 
     for label, path in (("earth", earth_ephem), ("sun", sun_ephem)):
+        if path is None:
+            sys.stderr.write(f"Error: no {label}-ephem given in config file.\n")
+            return 1
         if not os.path.isfile(path):
             sys.stderr.write(
                 f"WARNING: {label} ephemeris file not found: {path}\n"
@@ -384,6 +577,15 @@ def main(argv=None):
         sys.stderr.write("No detectors specified in config file.\n")
         return 1
 
+    cw_params = None
+    if write_signal:
+        cw_params = read_signal_params(config)
+        if cw_params is None:
+            return 1
+        print("Signal generation enabled with parameters:")
+        for key, value in cw_params.items():
+            print(f"  {key} = {value}")
+
     detectors = [d.strip() for d in detector_list.split(",") if d.strip()]
 
     dt = 1.0 / (2.0 * bandwidth)
@@ -393,7 +595,7 @@ def main(argv=None):
     #found by Andrzej Królak in the C code, shared this information by Pawel Ciecialag
     einstein_factor = 1e-20
 
-    print(f"Using the Einstein Factor:{einstein_factor:.6e}", end="")
+    print(f"Using the Einstein Factor: {einstein_factor:.6e}")
 
     gps_time = starting_gpstime
     for seg in range(1, nseg + 1):
@@ -411,7 +613,8 @@ def main(argv=None):
             print(f"bandwidth={bandwidth:f} ")
             print(f"ov={ov:f} ")
 
-            freq = get_fpo(bandnumber, bandwidth, ov) + bandwidth / 2.0
+            fpo = get_fpo(bandnumber, bandwidth, ov)
+            freq = fpo + bandwidth / 2.0
             psd_val = interpolate_psd(fname, freq)
             asd = math.sqrt(psd_val)
             asd_ef = asd / einstein_factor
@@ -427,13 +630,28 @@ def main(argv=None):
                 f"at GPS time {gps_time:.0f}"
             )
 
-            generate_ephemeris_segment(gps_time, nod, det, output_directory, N, bandwidth, earth_ephem, sun_ephem)
- 
+            ephem = generate_ephemeris_segment(gps_time, nod, det, output_directory, N, bandwidth, earth_ephem, sun_ephem)
+            if ephem is None:
+                sys.stderr.write(f"Error generating ephemeris for {segment_name}/{det}\n")
+                continue
+            DetSSB, phir = ephem
 
+            # Signal first (if requested), so it can go into the noise file.
+            signal = None
+            if write_signal:
+                detector = build_detector(
+                    det, segment_name, bandnumber, ov, gps_time, N,
+                    bandwidth, fpo, DetSSB, phir,
+                )
+                signal = generate_signal(
+                    detector, cw_params, starting_gpstime, einstein_factor
+                )
+
+            # e.g. ./output/001/H1/xdat_001_1234.bin
             xdat_file = os.path.join(
                 output_directory, f"xdat_{segment_name}_{bandnumber:04d}.bin"
             )
-            if generate_gaussian_data(N, 1.0, variance, xdat_file, None) != 0:
+            if generate_gaussian_data(N, 1.0, variance, xdat_file, maskfile, signal) != 0:
                 sys.stderr.write(
                     f"Error generating Gaussian data for {segment_name}/{det}\n"
                 )
