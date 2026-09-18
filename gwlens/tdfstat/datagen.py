@@ -4,7 +4,7 @@ datagen.py - generate ephemeris data for multiple segments and detectors
 
 Python port of datagen.c + get_barycenter.c (Sreekanth Harikumar).
 
-Pipeline:
+Tasks:
   - reads a config .ini (sections [general] and [gaussian])
   - for each segment / detector:
       * picks the PSD file from psd-dict, interpolates it at the band frequency
@@ -214,7 +214,7 @@ def get_fpo(bandnumber, bandwidth, ov):
 
 
 # ----------------------------------------------------------------------------
-# Barycentring  (get_barycenter) -- faithful to get_barycenter.c
+# Barycentring  (get_barycenter)
 # ----------------------------------------------------------------------------
 def get_barycenter(gps1, site, edat, N, dt):
     """For N samples from gps1 (step dt), evaluate XLALBarycenter along x^, y^, z^.
@@ -279,7 +279,7 @@ def generate_ephemeris_segment(gps_start, ndays, detector_name, output_dir, N, b
     # See sid() note -- using LAL GMST(gps) as a correct stand-in.
     phir = sid(gps_start, elam)
 
-    edat = lalpulsar.InitBarycenter(EFILE=earth_ephem, SFILE=sun_ephem)
+    edat = lalpulsar.InitBarycenter(earth_ephem,sun_ephem)
 
     DetSSB, rDet = get_barycenter(gps_start, detector, edat, N, dt)
 
@@ -355,19 +355,16 @@ def main(argv=None):
     psd_dict = tdfstat_config.get("psd-dict", fallback=None)
     bandnumber = tdfstat_config.getint("band", 1234)
     output_dir = tdfstat_config.get("output_dir", fallback="./output")
-    
-
-
     earth_ephem = tdfstat_config.get("earth-ephem", fallback=None)
     sun_ephem   = tdfstat_config.get("sun-ephem",   fallback=None)
-    print(earth_ephem)
+    
 
-    #for label, path in (("earth", earth_ephem), ("sun", sun_ephem)):
-    #    if not os.path.isfile(path):
-    #        sys.stderr.write(
-    #            f"WARNING: {label} ephemeris file not found: {path}\n"
-    #        )
- 
+    for label, path in (("earth", earth_ephem), ("sun", sun_ephem)):
+        if not os.path.isfile(path):
+            sys.stderr.write(
+                f"WARNING: {label} ephemeris file not found: {path}\n"
+            )
+
 
     #The below code is commented out because the amp and sigma parameters are not used in the current implementation of datagen.py,
     # as the Gaussian data is generated with a fixed amplitude of 1.0 and a variance derived from the interpolated PSD value. 
