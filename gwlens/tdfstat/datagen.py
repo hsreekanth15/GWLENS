@@ -3,7 +3,7 @@
 datagen.py - generate ephemeris data for multiple segments and detectors
 
 Python port of datagen.c + get_barycenter.c (Sreekanth Harikumar).
-Adapted from the original C code 
+Adapted from the original C code in TDFstat in particular the ephemeris generation and Gaussian noise generation.
 
 Tasks:
   - reads a config .ini (section [tdfstat], plus [signal] when write_signal = true)
@@ -25,7 +25,7 @@ Only the sidereal phase `sid` cannot be matched bit-for-bit yet (sid.c not in ha
 LAL's GreenwichMeanSiderealTime is used as a correct stand-in -- see sid() note.
 
 Requires:  numpy, scipy, lalsuite   (pip install numpy scipy lalsuite)
-Run:       python datagen.py config.ini
+Run:       gwlens_cw_datagen config.ini
 """
 
 import argparse
@@ -37,7 +37,7 @@ import math
 import errno
 import configparser
 from types import SimpleNamespace
-
+from . import constants
 import numpy as np
 from scipy.interpolate import CubicSpline
 
@@ -52,12 +52,11 @@ except ImportError:         # run directly: python datagen.py config.ini
 # ----------------------------------------------------------------------------
 # Constants (mirror the #defines in datagen.c / EphemerisDetector.h)
 # ----------------------------------------------------------------------------
-#EFILE = "earth00-40-DE405.dat"
-#SFILE = "sun00-40-DE405.dat"
-EPSILON = 0.40909280422232891          # obliquity of the ecliptic [rad]
-SIDEREAL_DAY = 86164.09890369719       # seconds
-C_SI = lal.C_SI                        # 299792458.0 m/s
-_DEG = 180.0 / math.pi                 # the C 'deg' factor (radians per ... see usage)
+
+EPSILON = constants.EPSILON
+SIDEREAL_DAY = constants.SIDEREAL_DAY
+C_SI = constants.C_SI
+_DEG = constants._DEG
 
 # Detector geocentric XYZ [metres] -- hardcoded exactly as in get_barycenter.c.
 _H = (-2161414.92636,   -3834695.17889,    4600350.22664)
@@ -246,6 +245,34 @@ def get_fpo(bandnumber, bandwidth, ov):
     """fpo = 10 + (1 - 2^-ov) * bandnumber * bandwidth."""
     return 10.0 + (1.0 - 2.0 ** (-ov)) * bandnumber * bandwidth
 
+def suggest_bands(freq, bandwidth, ov):
+    """Find the band numbers whose range [fpo, fpo + bandwidth] contains freq.
+
+    Neighbouring bands overlap, so a frequency can lie in more than one.
+    Returns (best, candidates), where best is the band in which freq sits
+    closest to the centre, or (None, []) if no band contains freq
+    (bands start at 10 Hz).
+    
+    A better version than the one use prior to GWLENS implementation.
+    """
+    step = (1.0 - 2.0 ** (-ov)) * bandwidth        # fpo spacing between bands
+    if step <= 0.0 or freq < 10.0:
+        return None, []
+
+    lo = max(0, math.floor((freq - 10.0 - bandwidth) / step))
+    hi = math.ceil((freq - 10.0) / step)
+    candidates = [
+        b for b in range(lo, hi + 1)
+        if get_fpo(b, bandwidth, ov) <= freq <= get_fpo(b, bandwidth, ov) + bandwidth
+    ]
+    if not candidates:
+        return None, []
+
+    best = min(
+        candidates,
+        key=lambda b: abs(get_fpo(b, bandwidth, ov) + 0.5 * bandwidth - freq),
+    )
+    return best, candidates
 
 # ----------------------------------------------------------------------------
 # Barycentring  (get_barycenter)
@@ -468,16 +495,35 @@ def generate_signal(detector, cw_params, ref_gps_time, einstein_factor):
     )
 
     fpo = detector.starting_frequency
-    if not fpo <= f_gw <= fpo + detector.bandwidth:
+    bandwidth = detector.bandwidth
+    if not fpo <= f_gw <= fpo + bandwidth:
         sys.stderr.write(
             f"Warning: signal frequency {f_gw:.6f} Hz is outside "
-            f"the band [{fpo:.6f}, {fpo + detector.bandwidth:.6f}] Hz.\n"
+            f"band {detector.band} [{fpo:.6f}, {fpo + bandwidth:.6f}] Hz.\n"
+        )
+        best, candidates = suggest_bands(f_gw, bandwidth, detector.overlap)
+        if best is None:
+            sys.stderr.write(
+                f"  No band contains {f_gw:.6f} Hz (bands start at 10 Hz).\n"
+            )
+        else:
+            best_fpo = get_fpo(best, bandwidth, detector.overlap)
+            msg = (
+                f"  Suggestion: set band = {best} in [tdfstat] "
+                f"(covers [{best_fpo:.6f}, {best_fpo + bandwidth:.6f}] Hz)"
+            )
+            others = [str(b) for b in candidates if b != best]
+            if others:
+                msg += f"; band {', '.join(others)} also contains it"
+            sys.stderr.write(msg + "\n")
+        sys.stderr.write(
+            f"  Or keep band = {detector.band} and set frequency in [signal] "
+            f"between {fpo:.6f} and {fpo + bandwidth:.6f} Hz.\n"
         )
 
     params = {
         key: cw_params[key]
-        for key in ("ra", "dec", "wobble_angle", "inclination",
-                    "polarization", "reference_phase")
+        for key in ("ra", "dec", "wobble_angle", "inclination", "polarization", "reference_phase")
     }
     params["frequency"] = 0.5 * (f_gw - fpo)
     params["spin_down"] = 0.5 * cw_params["spin_down"]
