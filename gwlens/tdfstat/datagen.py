@@ -325,7 +325,7 @@ def get_psd_for_detector(psd_dict, detector):
 # ----------------------------------------------------------------------------
 # main
 # ----------------------------------------------------------------------------
-def main(argv):
+def main(argv=None):
 
     parser = argparse.ArgumentParser(description="Generate segments for TDFStat")
     parser.add_argument("config", help="Path to the parameters .ini file containing [tdfstat] section")
@@ -358,15 +358,15 @@ def main(argv):
     
 
 
-    earth_ephem = tdfstat_config.get("ephem-earth", fallback=None)
-    sun_ephem   = tdfstat_config.get("ephem-sun",   fallback=None)
+    earth_ephem = tdfstat_config.get("earth-ephem", fallback=None)
+    sun_ephem   = tdfstat_config.get("sun-ephem",   fallback=None)
+    print(earth_ephem)
 
-
-    for label, path in (("earth", earth_ephem), ("sun", sun_ephem)):
-        if not os.path.isfile(path):
-            sys.stderr.write(
-                f"WARNING: {label} ephemeris file not found: {path}\n"
-            )
+    #for label, path in (("earth", earth_ephem), ("sun", sun_ephem)):
+    #    if not os.path.isfile(path):
+    #        sys.stderr.write(
+    #            f"WARNING: {label} ephemeris file not found: {path}\n"
+    #        )
  
 
     #The below code is commented out because the amp and sigma parameters are not used in the current implementation of datagen.py,

@@ -49,6 +49,19 @@ outdir = outdir
 #*****************************************#
 
 generate_plots = True
+#*****************************************#
+[tdfstat]
+starting_gpstime=1000000000
+nseg=2
+nod=6
+bandwidth=0.5
+ov=5.0
+detector_list=H1,L1,V1
+psd_dict="{H1:/path,L1:/path}"
+bandnumber=1234
+output_dir=cwlens
+sun_ephem= #path/to/sun-earthfile.dat
+earth_ephem= #path/to/earth-sunfile.dat
 
 #*****************************************#
 [Inference] 
