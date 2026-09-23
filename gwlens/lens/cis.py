@@ -4,6 +4,8 @@ import multiprocessing as mpr
 import h5py
 import os
 import configparser
+from importlib.metadata import version, PackageNotFoundError   
+from datetime import datetime, timezone                        
 import logging
 from mpmath import mp, mpf, sqrt, exp, besselj, quad, log
 from multiprocessing import Pool, cpu_count

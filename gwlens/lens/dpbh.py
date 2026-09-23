@@ -10,6 +10,8 @@ from astropy import constants as const
 from astropy import units as u
 from gwlens.tools import logutils
 from functools import partial
+from importlib.metadata import version, PackageNotFoundError   
+from datetime import datetime, timezone                       
 import h5py
 import configparser
 import time

@@ -5,6 +5,8 @@ import os
 import numpy as np
 import multiprocessing as mpr
 from mpmath import hyp1f1,exp, mp,sqrt,mpc,pi,log,gamma, besselj
+from importlib.metadata import version, PackageNotFoundError   
+from datetime import datetime, timezone                        
 import logging
 import mpmath
 from astropy.constants import c,G,M_sun

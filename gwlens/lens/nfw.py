@@ -7,6 +7,8 @@ import configparser
 import logging
 from .base import Lens
 from gwlens.lens import solver
+from importlib.metadata import version, PackageNotFoundError   
+from datetime import datetime, timezone                        
 from scipy.optimize import fsolve,brentq
 from scipy.special import jv
 from scipy.special import factorial as sp_fac
@@ -1240,8 +1242,8 @@ def compute_nfw_lens_test(w_values, y_values, rs_values, hdf5_filename, num_jobs
         f.create_dataset("rs_values", data=rs_values)
         f.create_dataset("results", data=result_array, chunks=True, compression="gzip")
 
-    logger.info(f"✅ Completed in {time.time() - t0:.2f} seconds.")
-    logger.info("💾 Interpolation grid saved and ready.")
+    logger.info(f"Completed in {time.time() - t0:.2f} seconds.")
+    logger.info("Interpolation grid saved and ready.")
 
 
 def compute_nfw_lens_grid_mpi(w_values, y_values, rs_values,
@@ -1345,6 +1347,25 @@ def compute_nfw_lens_grid_mpi(w_values, y_values, rs_values,
 
         t_write = time.time()
         with h5py.File(hdf5_filename, "w") as h5:
+             # ---- file-level metadata ----                                  
+            try:                                                              
+                gw_ver = version("gwlens")                                    
+            except PackageNotFoundError:                                       
+                gw_ver = "unknown"                                             
+            h5.attrs["pipeline"] = "gwlens"                                    
+            h5.attrs["gwlens_version"] = gw_ver                                
+            h5.attrs["created_utc"] = datetime.now(timezone.utc).isoformat()  
+            h5.attrs["mpi_ranks"] = size                                      
+            h5.attrs["mp_dps"] = mp.dps                                       
+
+            for name, vals in (("w", w_values), ("y", y_values), ("rs", rs_values)):  
+                h5.attrs[f"{name}_min"] = float(vals[0])                      
+                h5.attrs[f"{name}_max"] = float(vals[-1])                     
+                h5.attrs[f"{name}_num"] = len(vals)                           
+
+                                    
+
+
             h5.create_dataset("w_values",  data=np.asarray(w_values,  dtype="f8"))
             h5.create_dataset("y_values",  data=np.asarray(y_values,  dtype="f8"))
             h5.create_dataset("rs_values", data=np.asarray(rs_values, dtype="f8"))

@@ -3,6 +3,23 @@ from tqdm import tqdm
 from scipy.interpolate import RegularGridInterpolator,RectBivariateSpline
 import h5py
 
+def spline_eval_chunked(real_spline, imag_spline, w, y, chunk_size=500_000):
+    """
+    Evaluate bivariate splines in chunks to avoid allocating huge arrays.
+    Useful when w and y are large arrays, which can lead to memory issues.
+    Made for writing the CW lens generation code, where w and y can be very large.
+    """
+    n = len(y)
+    real_out = np.empty(n, dtype=np.float32)
+    imag_out = np.empty(n, dtype=np.float32)
+
+    for i in range(0, n, chunk_size):
+        j = i + chunk_size
+        real_out[i:j] = real_spline(w, y[i:j], grid=False)
+        imag_out[i:j] = imag_spline(w, y[i:j], grid=False)
+
+    return real_out + 1j * imag_out
+
 def interpolate_2D_spline(interpolation_file, w_query, y_query):
     with h5py.File(interpolation_file, 'r') as file:
         w_values = file['w_values'][:]

@@ -10,6 +10,8 @@ from  gwlens.lens import solver
 from astropy.constants import c,G
 from astropy import units as u
 from astropy.cosmology import FlatLambdaCDM
+from importlib.metadata import version, PackageNotFoundError   
+from datetime import datetime, timezone                        
 from scipy.optimize import fsolve
 from mpmath import mp, mpc, exp, pi, gamma, factorial, hyp1f1, nstr
 

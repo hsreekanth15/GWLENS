@@ -6,12 +6,15 @@ Python port of datagen.c + get_barycenter.c (Sreekanth Harikumar).
 Adapted from the original C code in TDFstat in particular the ephemeris generation and Gaussian noise generation.
 
 Tasks:
-  - reads a config .ini (section [tdfstat], plus [signal] when write_signal = true)
+  - reads a config .ini (section [tdfstat], plus [cwsignal] when write_signal = true
+    and [lensing] when lensing = true)
   - for each segment / detector:
       * picks the PSD file from psd-dict, interpolates it at the band frequency
       * computes the detector ephemeris (DetSSB.bin, rDet.bin, rSSB.bin)
       * writes Gaussian noise to xdat_<seg>_<band>.bin; if write_signal = true,
         the CW signal (sigen.TimeSeries) is added to the noise before writing
+      * if lensing = true, the signal is multiplied by the amplification factor
+        |F| and its phase shifted by arg(F) before it goes into the noise
   - advances the GPS time by one sidereal day * nod per segment
 
 Barycentring follows get_barycenter.c exactly: per time sample, XLALBarycenter is
@@ -36,10 +39,13 @@ import sys
 import math
 import errno
 import configparser
+import h5py
 from types import SimpleNamespace
 from . import constants
 import numpy as np
-from scipy.interpolate import CubicSpline
+from scipy.interpolate import CubicSpline, RectBivariateSpline
+from gwlens.tools.utilities import spline_eval_chunked
+from gwlens import microlensing
 
 import lal
 import lalpulsar
@@ -52,7 +58,6 @@ except ImportError:         # run directly: python datagen.py config.ini
 # ----------------------------------------------------------------------------
 # Constants (mirror the #defines in datagen.c / EphemerisDetector.h)
 # ----------------------------------------------------------------------------
-
 EPSILON = constants.EPSILON
 SIDEREAL_DAY = constants.SIDEREAL_DAY
 C_SI = constants.C_SI
@@ -75,7 +80,7 @@ _NAMES = [
     "L1", "GEO", "G1", "V1", "VIRGO", "TAMA", "T1",
 ]
 
-# Signal parameters read from the [signal] section (all floats).
+# Signal parameters read from the [cwsignal] section (all floats).
 _SIGNAL_KEYS = (
     "h0", "frequency", "spin_down", "ra", "dec",
     "wobble_angle", "inclination", "polarization", "reference_phase",
@@ -245,6 +250,7 @@ def get_fpo(bandnumber, bandwidth, ov):
     """fpo = 10 + (1 - 2^-ov) * bandnumber * bandwidth."""
     return 10.0 + (1.0 - 2.0 ** (-ov)) * bandnumber * bandwidth
 
+
 def suggest_bands(freq, bandwidth, ov):
     """Find the band numbers whose range [fpo, fpo + bandwidth] contains freq.
 
@@ -252,8 +258,8 @@ def suggest_bands(freq, bandwidth, ov):
     Returns (best, candidates), where best is the band in which freq sits
     closest to the centre, or (None, []) if no band contains freq
     (bands start at 10 Hz).
-    
-    A better version than the one use prior to GWLENS implementation.
+
+    A better version than the one used prior to the GWLENS implementation.
     """
     step = (1.0 - 2.0 ** (-ov)) * bandwidth        # fpo spacing between bands
     if step <= 0.0 or freq < 10.0:
@@ -273,6 +279,7 @@ def suggest_bands(freq, bandwidth, ov):
         key=lambda b: abs(get_fpo(b, bandwidth, ov) + 0.5 * bandwidth - freq),
     )
     return best, candidates
+
 
 # ----------------------------------------------------------------------------
 # Barycentring  (get_barycenter)
@@ -452,11 +459,11 @@ def parse_number(text):
 
 
 def read_signal_params(config):
-    """Read the [signal] section into a dict of floats, or None on error."""
-    if not config.has_section("signal"):
-        sys.stderr.write("write_signal = true but there is no [signal] section.\n")
+    """Read the [cwsignal] section into a dict of floats, or None on error."""
+    if not config.has_section("cwsignal"):
+        sys.stderr.write("write_signal = true but there is no [cwsignal] section.\n")
         return None
-    sec = config["signal"]
+    sec = config["cwsignal"]
     params = {}
     missing = []
     for key in _SIGNAL_KEYS:
@@ -464,28 +471,336 @@ def read_signal_params(config):
             try:
                 params[key] = parse_number(sec[key])
             except ValueError as e:
-                sys.stderr.write(f"[signal] {key}: {e}\n")
+                sys.stderr.write(f"[cwsignal] {key}: {e}\n")
                 return None
         elif key in _SIGNAL_DEFAULTS:
             params[key] = _SIGNAL_DEFAULTS[key]
         else:
             missing.append(key)
     if missing:
-        sys.stderr.write(f"[signal] section is missing: {', '.join(missing)}\n")
+        sys.stderr.write(f"[cwsignal] section is missing: {', '.join(missing)}\n")
         return None
     return params
 
 
-def generate_signal(detector, cw_params, ref_gps_time, einstein_factor):
+# ----------------------------------------------------------------------------
+# Lensing: amplification factor F = |F| exp(i arg F) along the microlensing track
+# ----------------------------------------------------------------------------
+LENS_MODEL_PARAMETERS = {
+    "point": ["w_values", "y_values", "results"],
+    "sis": ["w_values", "y_values", "results"],
+    "nfw": ["w_values", "y_values", "rs_values", "results"],
+    "dpbh": ["w_values", "y_values", "f_pbh_values", "m_pbh_values", "results"],
+}
+
+# Axes of `results` beyond (w, y), and the [lensing] key selecting a value on each.
+_LENS_SELECTION_KEYS = {
+    "f_pbh_values": "f_pbh",
+    "m_pbh_values": "m_pbh",
+    "rs_values": "rs",
+}
+
+# The microlensing timescales (Einstein crossing time, impact parameter) are in
+# days. Change this if your microlensing module uses a different unit.
+_SECONDS_PER_DAY = 86400.0
+
+# w = 8*pi*G*M_Lz*f / c^3, the dimensionless frequency, M_Lz in solar masses.
+_W_FACTOR = 8.0 * math.pi * lal.G_SI * lal.MSUN_SI / lal.C_SI ** 3
+
+
+def _load_hdf5_table(file_path, lens_model):
+    """
+    Load the HDF5 table for the given lens model and return the parameters as a dictionary.
+    """
+    if lens_model not in LENS_MODEL_PARAMETERS:
+        raise ValueError(f"Unsupported lens model: {lens_model}")
+
+    params = {}
+    with h5py.File(file_path, 'r') as f:
+        for param in LENS_MODEL_PARAMETERS[lens_model]:
+            if param in f:
+                params[param] = f[param][:]
+            else:
+                raise KeyError(f"Parameter '{param}' not found in HDF5 file for lens model '{lens_model}'.")
+
+    return params
+
+
+class _FixedWSpline:
+    """Wrap a 1-D spline so it takes the (w, y, grid=False) call that
+    spline_eval_chunked expects, for tables holding a single w value."""
+
+    def __init__(self, spline):
+        self._spline = spline
+
+    def __call__(self, w, y, grid=False):
+        return self._spline(y)
+
+
+def build_amplification_splines(lens_data, lens_model, selection):
+    """Reduce `results` to a (w, y) grid and spline its real and imaginary parts.
+
+    `results` is indexed [w, y, <model parameters>, 0/1], the last axis being
+    real / imaginary. For every model parameter beyond w and y, the value in
+    the table nearest to the one requested in `selection` is used.
+
+    Returns (w_values, y_values, real_spline, imag_spline, chosen), where
+    `chosen` maps each selection key to the table value actually used.
+    """
+    w_values = np.asarray(lens_data["w_values"], dtype=np.float64)
+    y_values = np.asarray(lens_data["y_values"], dtype=np.float64)
+    results = np.asarray(lens_data["results"])
+
+    index = [slice(None), slice(None)]
+    chosen = {}
+    for param in LENS_MODEL_PARAMETERS[lens_model]:
+        if param in ("w_values", "y_values", "results"):
+            continue
+        grid = np.asarray(lens_data[param], dtype=np.float64)
+        key = _LENS_SELECTION_KEYS.get(param, param)
+        value = selection.get(key)
+        if value is None:
+            j = 0
+            print(f"  {key}: not given, using {grid[j]:g} (first in the table)")
+        else:
+            j = int(np.argmin(np.abs(grid - value)))
+            print(f"  {key} = {value:g}, using {grid[j]:g} (nearest in the table)")
+        chosen[key] = float(grid[j])
+        index.append(j)
+
+    real = np.asarray(results[tuple(index) + (0,)], dtype=np.float64)
+    imag = np.asarray(results[tuple(index) + (1,)], dtype=np.float64)
+    if real.shape != (w_values.size, y_values.size):
+        raise ValueError(
+            f"results has shape {real.shape} after selecting the model parameters, "
+            f"expected (w_values, y_values) = ({w_values.size}, {y_values.size})"
+        )
+
+    if w_values.size == 1:
+        # Nothing to interpolate over w: spline in y only, at that single w.
+        return (w_values, y_values,
+                _FixedWSpline(CubicSpline(y_values, real[0])),
+                _FixedWSpline(CubicSpline(y_values, imag[0])),
+                chosen)
+
+    kx = min(3, w_values.size - 1)
+    ky = min(3, y_values.size - 1)
+    return (w_values, y_values,
+            RectBivariateSpline(w_values, y_values, real, kx=kx, ky=ky),
+            RectBivariateSpline(w_values, y_values, imag, kx=kx, ky=ky),
+            chosen)
+
+
+class LensingModel:
+    """F(t) along one microlensing track, evaluated segment by segment.
+
+    Time is counted in days from the first sample of the run. The closest
+    approach sits at t0, which defaults to the middle of the run. Each sample's
+    time comes from its GPS time rather than from a sample count, so the track
+    stays aligned with the data even though segments are a whole number of
+    samples long while the GPS time advances by nod sidereal days.
+    """
+
+    def __init__(self, real_spline, imag_spline, w, TE, t_obs, y0, delta_t,
+                 t0=None, y_range=None, chunk_size=500_000):
+        self.real_spline = real_spline
+        self.imag_spline = imag_spline
+        self.w = w
+        self.TE = TE
+        self.t_obs = t_obs                # length of the run [days]
+        self.y0 = y0                      # minimum impact parameter
+        self.delta_t = delta_t            # sample spacing [s]
+        # Time of closest approach, in days from the first sample of the run.
+        self.t0 = 0.5 * t_obs if t0 is None else t0
+        self.y_range = y_range
+        self.chunk_size = chunk_size
+
+    def amplification(self, offset, count):
+        """Complex F for `count` samples starting `offset` seconds into the run."""
+        elapsed = offset + np.arange(count, dtype=np.float64) * self.delta_t
+        t = elapsed / _SECONDS_PER_DAY    # days from the start of the run
+        y = microlensing.MicrolensingImpactparameter(t, self.y0, self.t0, self.TE)
+
+        if self.y_range is not None:
+            lo, hi = self.y_range
+            if y.min() < lo or y.max() > hi:
+                sys.stderr.write(
+                    f"Warning: impact parameter y in [{y.min():.4g}, {y.max():.4g}] "
+                    f"leaves the table range [{lo:.4g}, {hi:.4g}]; the spline is "
+                    f"clamped to the edge value there, so F stops varying.\n"
+                )
+
+        return spline_eval_chunked(
+            self.real_spline, self.imag_spline, self.w, y, self.chunk_size
+        )
+
+
+def prepare_lensing(config, cw_params, delta_t, run_seconds):
+    """Read [lensing], load the lookup table and return a LensingModel, or None.
+
+    delta_t is the sample spacing [s] and run_seconds the length of the whole
+    run, from the first sample of the first segment to the last sample of the
+    last one. The track is centred on the time of closest approach.
+    """
+    if not config.has_section("lensing"):
+        sys.stderr.write("lensing = true but there is no [lensing] section.\n")
+        return None
+    sec = config["lensing"]
+
+    lens_model = sec.get("lens_model", fallback=None)
+    table_path = sec.get("lens_lookup_table", fallback=None)
+    if lens_model is None or table_path is None:
+        sys.stderr.write("[lensing] needs lens_model and lens_lookup_table.\n")
+        return None
+    if lens_model not in LENS_MODEL_PARAMETERS:
+        sys.stderr.write(
+            f"[lensing] unsupported lens_model {lens_model!r}; known models: "
+            f"{', '.join(sorted(LENS_MODEL_PARAMETERS))}\n"
+        )
+        return None
+
+    missing = [
+        key for key in ("distance_to_lens", "distance_to_source", "velocity")
+        if key not in sec
+    ]
+    if missing:
+        sys.stderr.write(f"[lensing] section is missing: {', '.join(missing)}\n")
+        return None
+
+    Dl = sec.getfloat("distance_to_lens")
+    Ds = sec.getfloat("distance_to_source")
+    velocity = sec.getfloat("velocity")
+    # y0 is the dimensionless minimum impact parameter, not a time.
+    # "closest_approach" is still accepted for older config files.
+    y0 = sec.getfloat("y0", fallback=None)
+    if y0 is None:
+        y0 = sec.getfloat("closest_approach", fallback=0.0)
+    # Optional: when the closest approach happens, in days from the start of
+    # the run. Defaults to the middle of the run.
+    t0 = sec.getfloat("time_of_closest_approach", fallback=None)
+    selection = {
+        key: sec.getfloat(key)
+        for key in ("f_pbh", "m_pbh", "rs") if key in sec
+    }
+
+    print(f"Lensing enabled: model {lens_model}, table {table_path}")
+    try:
+        lens_data = _load_hdf5_table(table_path, lens_model)
+        w_values, y_values, real_spline, imag_spline, chosen = (
+            build_amplification_splines(lens_data, lens_model, selection)
+        )
+    except (OSError, ValueError, KeyError) as e:
+        sys.stderr.write(f"Error loading lens data: {e}\n")
+        return None
+
+    # Redshifted lens mass: from [lensing], else the m_pbh taken from the table.
+    lens_mass = sec.getfloat("lens_mass", fallback=None)
+    if lens_mass is None:
+        lens_mass = chosen.get("m_pbh")
+    if lens_mass is None:
+        sys.stderr.write("[lensing] needs lens_mass (redshifted lens mass, M_sun).\n")
+        return None
+
+    # The band is narrow, so a single w for the whole signal is enough.
+    w = sec.getfloat("dimensionless_frequency", fallback=None)
+    if w is None:
+        w = _W_FACTOR * lens_mass * cw_params["frequency"]
+    if not w_values[0] <= w <= w_values[-1]:
+        sys.stderr.write(
+            f"Warning: w = {w:.6g} is outside the table range "
+            f"[{w_values[0]:.6g}, {w_values[-1]:.6g}]; the spline is clamped to the "
+            f"edge value there.\n"
+        )
+
+    t_obs = run_seconds / _SECONDS_PER_DAY
+    TE = microlensing.EinsteinCrossingTime(Dl, Ds, velocity, lens_mass)
+    print(f"  lens mass = {lens_mass:g} M_sun, w = {w:.6g}, "
+          f"minimum impact parameter y0 = {y0:g}")
+    print(f"  Einstein crossing time = {TE:.6g} days, "
+          f"observation span = {t_obs:.6g} days")
+    if not 1e-3 < t_obs / TE < 1e3:
+        sys.stderr.write(
+            "Warning: the observation span and the Einstein crossing time are "
+            "wildly different; check that EinsteinCrossingTime returns days.\n"
+        )
+
+    y_lo, y_hi = float(y_values[0]), float(y_values[-1])
+    if y0 > y_hi:
+        sys.stderr.write(
+            f"Error: y0 = {y0:g} is beyond the table's y range [{y_lo:.4g}, "
+            f"{y_hi:.4g}], so y never enters the table and F is the same in every "
+            f"segment.\n"
+            f"  y0 is the dimensionless minimum impact parameter (0 means the "
+            f"source passes straight behind the lens), not a time.\n"
+            f"  To move the peak in time, use time_of_closest_approach in days "
+            f"from the start of the run.\n"
+        )
+        return None
+
+    model = LensingModel(
+        real_spline, imag_spline, w, TE, t_obs, y0, delta_t, t0=t0,
+        y_range=(y_lo, y_hi),
+    )
+    print(f"  closest approach at {model.t0:.6g} days into the run "
+          f"(run is {t_obs:.6g} days long)")
+
+    # Probe the whole track before generating anything: a y that never moves, or
+    # that sits outside the table, gives the same F in every segment.
+    t_probe = np.linspace(0.0, run_seconds, 9) / _SECONDS_PER_DAY
+    y_probe = np.asarray(
+        microlensing.MicrolensingImpactparameter(t_probe, y0, model.t0, TE),
+        dtype=np.float64,
+    )
+    print(f"  impact parameter over the run: y from {y_probe.min():.4g} "
+          f"to {y_probe.max():.4g} (table covers {y_lo:.4g} to {y_hi:.4g})")
+
+    if y_probe.size < 2 or np.ptp(y_probe) <= 1e-6 * max(abs(y_probe).max(), 1e-300):
+        sys.stderr.write(
+            "Error: the impact parameter does not change over the run, so F would "
+            "be identical in every segment. Check that\n"
+            "  - microlensing.MicrolensingImpactparameter takes its arguments in the "
+            "order (t, y0, t0, TE) as called here, and\n"
+            "  - EinsteinCrossingTime returns days, matching _SECONDS_PER_DAY.\n"
+        )
+        return None
+
+    if y_probe.min() > y_hi or y_probe.max() < y_lo:
+        sys.stderr.write(
+            f"Error: the whole track lies outside the table's y range "
+            f"[{y_lo:.4g}, {y_hi:.4g}], so F would be pinned to one edge value "
+            f"in every segment.\n"
+            f"  The run spans {t_obs:.4g} days against an Einstein crossing time of "
+            f"{TE:.4g} days, giving y up to about {t_obs / (2.0 * TE):.4g}.\n"
+            f"  For y to stay in the table, the crossing time needs to be at least "
+            f"about {t_obs / (2.0 * y_hi):.4g} days.\n"
+        )
+        return None
+
+    outside = (y_probe < y_lo) | (y_probe > y_hi)
+    if outside.any():
+        sys.stderr.write(
+            f"Warning: part of the track lies outside the table's y range "
+            f"[{y_lo:.4g}, {y_hi:.4g}]; F is clamped to the edge value there.\n"
+        )
+
+    return model
+
+
+def generate_signal(detector, cw_params, ref_gps_time, einstein_factor,
+                    amplification=None):
     """Generate the CW signal for one segment/detector with the original
     sigen.TimeSeries and return it (float32) in the same units as the noise.
 
-    [signal] gives the absolute GW frequency [Hz] and spin-down [Hz/s]. They
+    [cwsignal] gives the absolute GW frequency [Hz] and spin-down [Hz/s]. They
     are converted to what the original class expects:
       * it has no heterodyne, and the data are stored relative to fpo (the
         band start), so the frequency is taken relative to fpo;
       * it uses cos(2*phase), so it wants half the GW frequency and spin-down;
       * it has no h0, so the amplitude h0 / einstein_factor is applied here.
+
+    If `amplification` is given (complex F, one value per sample), it is
+    passed on to sigen, which multiplies the signal by |F| and shifts its
+    phase by arg(F).
     """
     # GW frequency at this segment's start: spin-down evolves it from the
     # reference time (the first segment), so all segments stay consistent.
@@ -517,25 +832,40 @@ def generate_signal(detector, cw_params, ref_gps_time, einstein_factor):
                 msg += f"; band {', '.join(others)} also contains it"
             sys.stderr.write(msg + "\n")
         sys.stderr.write(
-            f"  Or keep band = {detector.band} and set frequency in [signal] "
+            f"  Or keep band = {detector.band} and set frequency in [cwsignal] "
             f"between {fpo:.6f} and {fpo + bandwidth:.6f} Hz.\n"
         )
 
     params = {
         key: cw_params[key]
-        for key in ("ra", "dec", "wobble_angle", "inclination", "polarization", "reference_phase")
+        for key in ("ra", "dec", "wobble_angle", "inclination",
+                    "polarization", "reference_phase")
     }
     params["frequency"] = 0.5 * (f_gw - fpo)
     params["spin_down"] = 0.5 * cw_params["spin_down"]
 
-    signal, _ = TimeSeries(detector).generate_time_domain_signal(**params)
+    if amplification is not None:
+        params["amplification"] = amplification
+
+    time_series = TimeSeries(detector)
+    signal, _ = time_series.generate_time_domain_signal(**params)
+
+    lensed = ""
+    if amplification is not None:
+        if time_series.amplification is None:
+            raise RuntimeError(
+                "sigen.TimeSeries ignored the amplification factor: this needs "
+                "the version of sigen.py that accepts 'amplification'."
+            )
+        absF = np.abs(amplification)
+        lensed = f", lensed: |F| in [{absF.min():.4f}, {absF.max():.4f}]"
 
     # The noise is in units of strain / einstein_factor, so the signal must be too.
     signal = signal * (cw_params["h0"] / einstein_factor)
 
     print(
         f"Generated signal for {detector.name} segment {detector.segment} "
-        f"(f = {f_gw:.6f} Hz)"
+        f"(f = {f_gw:.6f} Hz{lensed})"
     )
     return signal.astype(np.float32)
 
@@ -593,6 +923,7 @@ def main(argv=None):
     earth_ephem = tdfstat_config.get("earth-ephem", fallback=None)
     sun_ephem   = tdfstat_config.get("sun-ephem",   fallback=None)
     write_signal = tdfstat_config.getboolean("write_signal", fallback=False)
+    lensing = tdfstat_config.getboolean("lensing", fallback=False)
     maskfile = tdfstat_config.get("maskfile", fallback=None)
 
     for label, path in (("earth", earth_ephem), ("sun", sun_ephem)):
@@ -635,7 +966,23 @@ def main(argv=None):
     detectors = [d.strip() for d in detector_list.split(",") if d.strip()]
 
     dt = 1.0 / (2.0 * bandwidth)
-    N = int(SIDEREAL_DAY * nod / dt)
+    N = int(SIDEREAL_DAY * nod / dt)          # samples in one segment
+
+    # The whole run is one microlensing track, centred on the closest approach.
+    # Its length is measured on the GPS timeline: segments start nod sidereal
+    # days apart and the last one is N samples long.
+    lens = None
+    if lensing:
+        if not write_signal:
+            sys.stderr.write(
+                "lensing = true needs write_signal = true: the amplification "
+                "factor is applied to the CW signal.\n"
+            )
+            return 1
+        run_seconds = (nseg - 1) * nod * SIDEREAL_DAY + N * dt
+        lens = prepare_lensing(config, cw_params, dt, run_seconds)
+        if lens is None:
+            return 1
     
     #The scaling used in CW analysis
     #found by Andrzej Królak in the C code, shared this information by Pawel Ciecialag
@@ -646,6 +993,12 @@ def main(argv=None):
     gps_time = starting_gpstime
     for seg in range(1, nseg + 1):
         segment_name = f"{seg:03d}"
+
+        # One track for the whole run, so F(t) is the same for every detector.
+        lens_amp = None
+        if lens is not None:
+            lens_amp = lens.amplification(gps_time - starting_gpstime, N)
+
         for det in detectors:
             fname = get_psd_for_detector(psd_dict, det)
             if not fname:
@@ -690,7 +1043,8 @@ def main(argv=None):
                     bandwidth, fpo, DetSSB, phir,
                 )
                 signal = generate_signal(
-                    detector, cw_params, starting_gpstime, einstein_factor
+                    detector, cw_params, starting_gpstime, einstein_factor,
+                    amplification=lens_amp,
                 )
 
             # e.g. ./output/001/H1/xdat_001_1234.bin

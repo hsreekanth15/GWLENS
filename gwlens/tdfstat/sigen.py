@@ -30,6 +30,7 @@ class TimeSeries:
         self.phase = None
         self.amplitude_mod_a = None
         self.amplitude_mod_b = None
+        self.amplification = None
 
     @staticmethod
     def _generate_source_vector(ra, dec):
@@ -133,10 +134,27 @@ class TimeSeries:
             params["reference_phase"],
         )
 
-        signal = (
-            (a * a21 + b * a22) * np.cos(2.0 * phase)
-            + (a * a23 + b * a24) * np.sin(2.0 * phase)
+        #Lensing inclusion (doesn't existn in the TDFstat-PE version)
+
+        amplification = params.get("amplification")
+        signal_phase = 2.0 * phase
+        envelope = 1.0
+
+        if amplification is not None:
+            amplification = np.asarray(amplification)
+            if amplification.size != len(self.time_array):
+                raise ValueError(
+                    "Amplification array length must match time array length"
+                )
+            signal_phase = 2.0 * phase + np.angle(amplification)
+            envelope = np.abs(amplification)
+
+        #Phase of the below equation has to be checked. It is not clear if The current implementation adds it, but this may need to be verified with the physics of the problem.
+        signal = envelope*(
+            (a * a21 + b * a22) * np.cos(signal_phase)
+            + (a * a23 + b * a24) * np.sin(signal_phase)
         )
+
 
         if self.detector.time_domain_strain is None:
             raise RuntimeError(
@@ -149,6 +167,7 @@ class TimeSeries:
         self.phase = phase
         self.amplitude_mod_a = a
         self.amplitude_mod_b = b
+        self.amplification = amplification
         self.signal = signal
 
         self.detector.time_domain_strain += self.signal
