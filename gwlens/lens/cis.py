@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import logging
 from mpmath import mp, mpf, sqrt, exp, besselj, quad, log
 from multiprocessing import Pool, cpu_count
+from scipy.special import jv, roots_legendre, roots_laguerre
 
 mp.dps = 50  # set precision to 50 decimal places (arbitrary precision)
 eps = 1e-3  # relative accuracy tolerance
@@ -107,6 +108,90 @@ def CISAmplification(w, y,core):
 
     return -1j * w * exp(0.5 * 1j * w * y**2) * zz_val
 
+######NEW-METHOD###
+
+
+
+NGL = 20
+GL_X, GL_W = roots_legendre(NGL)
+NLAG = 60
+LAG_X, LAG_W = roots_laguerre(NLAG)
+
+
+def psi(x, psi0, rc):
+    """CIS potential for real or complex x (principal branches; fine for Re x > 0)."""
+    x = np.asarray(x, dtype=complex)
+    if rc == 0:
+        return psi0 * x                                   # SIS limit
+    r = np.sqrt(x * x + rc * rc)
+    return psi0 * (r + rc * np.log(2 * rc / (r + rc)))
+
+
+def dpsi(x, psi0, rc):
+    """psi'(x) = psi0 x / (r + rc) for real x >= 0 (deflection angle; always <= psi0)."""
+    return psi0 * x / (np.sqrt(x * x + rc * rc) + rc)
+
+
+def f(u, w, y, psi0, rc):
+    x = np.sqrt(2 * np.asarray(u, dtype=complex))
+    return jv(0, w * y * x) * np.exp(-1j * w * psi(x, psi0, rc))
+
+
+def split_point(y, psi0, rc):
+    """Smallest x_b >= max(3, 2y) with (y + psi'(x_b))/x_b <= 1/2: beyond every image,
+    and the tail decays at least as fast as e^{-w t / 2}. Since psi' <= psi0 this is
+    at most 2 (y + psi0)."""
+    xb = max(3.0, 2 * y)
+    while (y + dpsi(xb, psi0, rc)) / xb > 0.5:
+        xb *= 1.1
+    return xb
+
+
+def head_edges(w, y, psi0, rc, ub):
+    """Piece boundaries in [0, ub]: about one cycle of the full phase per piece."""
+    ug = np.unique(np.concatenate([np.geomspace(ub * 1e-12, ub, 3000),
+                                   np.linspace(0, ub, int(max(3000, 8 * w * ub / (2 * np.pi))))]))
+    ug = ug[ug > 0]
+    x = np.sqrt(2 * ug)
+    phase = w * (ug - psi(x, psi0, rc).real)
+    ug, x = np.r_[0.0, ug], np.r_[0.0, x]
+    phase = np.r_[-w * psi0 * rc, phase]                  # psi(0) = psi0 rc
+    V = np.concatenate([[0], np.cumsum(np.abs(np.diff(phase)))]) + w * y * x
+    edges = np.interp(np.arange(0, V[-1], 2 * np.pi), V, ug)
+    # grade towards u = 0: for small rc, psi ~ psi0 sqrt(2u) there (SIS-like cusp)
+    near0 = ub * np.logspace(-12, -1, 23)
+    first = edges[1] if len(edges) > 1 else ub
+    return np.unique(np.concatenate([[0.0], near0[near0 < first], edges,
+                                     np.linspace(0, ub, 5), [ub]]))
+
+
+def CIS(w, y, psi0=1.0, rc=0.05, xb=None):
+    """Amplification factor F(w, y) for the CIS (phase convention without phi_min)."""
+    w, y, psi0, rc = float(w), float(y), float(psi0), float(rc)
+    xb = split_point(y, psi0, rc) if xb is None else float(xb)
+    ub = max(xb**2 / 2, 20 / w)          # small w: keep the tail's structure away from t = 0
+    xb = np.sqrt(2 * ub)
+
+    # head
+    e = head_edges(w, y, psi0, rc, ub)
+    mid, half = (e[1:] + e[:-1]) / 2, (e[1:] - e[:-1]) / 2
+    uu = (mid[:, None] + half[:, None] * GL_X[None, :]).ravel()
+    ww = (half[:, None] * GL_W[None, :]).ravel()
+    head = np.sum(ww * f(uu, w, y, psi0, rc) * np.exp(1j * w * uu))
+
+    # tail along ub + i t;  t = tau / a
+    a = w * (1 - (y + dpsi(xb, psi0, rc)) / xb)
+    tail = 1j * np.exp(1j * w * ub) / a * np.sum(
+        LAG_W * f(ub + 1j * LAG_X / a, w, y, psi0, rc) * np.exp(-(w / a - 1) * LAG_X))
+
+    return -1j * w * np.exp(0.5j * w * y**2) * (head + tail)
+
+
+def CIS_many(ws, y, psi0=1.0, rc=0.05, xb=None):
+    """F on an array of frequencies."""
+    return np.array([CIS(w, y, psi0, rc, xb) for w in np.atleast_1d(ws)])
+
+#######
 
 
 
