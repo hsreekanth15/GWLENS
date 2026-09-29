@@ -18,6 +18,13 @@ from .base import Lens
 from gwlens.lens import solver
 from gwlens.tools import logutils
 
+#for new method
+from scipy.special import jv, roots_legendre, roots_laguerre
+NGL = 20
+GL_X, GL_W = roots_legendre(NGL)
+NLAG = 60
+LAG_X, LAG_W = roots_laguerre(NLAG)
+########
 mp.dps= 60
 
 
@@ -399,78 +406,75 @@ class PML(Lens):
         #F = complex(f.real, f.imag)
         return f
 
+# New method##
+def f(u, w, y):
+    """J0(w y x) * x^{-i w}, x = sqrt(2u); principal branch, fine for Re u > 0."""
+    x = np.sqrt(2 * np.asarray(u, dtype=complex))
+    return jv(0, w * y * x) * np.exp(-1j * w * np.log(x))
 
-    def psi(x):
-        """
-        Arbitrary precision mpmath version of the lensing potential
-        """
-        
-        return log(x)
-        
+def split_point(y):
+    """x_b beyond the outer image x+ = (y + sqrt(y^2+4))/2, with (y + psi'(x_b))/x_b <= 1/2.
+    For psi' = 1/x this is x_b >= y + sqrt(y^2 + 2) (~2y at large y; the head costs ~w x_b^2,
+    so this is ~2x cheaper than 3y with the same accuracy)."""
+    return max(3.0, y + np.sqrt(y * y + 2))
 
-    def func(x, w, y):
-        # x: real integration variable (mpf)
-        # w, y, amp, core, p: mpc or mpf
-        sqrt2x = sqrt(2 * x)
-        arg_bessel = w * y * sqrt2x
-        bessel_val = besselj(0, arg_bessel)
-        psi_val = psi(sqrt2x)
-        return bessel_val * exp(-1j * w * psi_val)
-
-    def func2(x, w, y):
-        return self.func(x, w, y) * exp(1j * w * x)
-
-    def dfunc(x, w, y):
-        sqrt2x = sqrt(2 * x)
-        psi_val = self.psi(sqrt2x)
-        J1 = besselj(1, w * y * sqrt2x)
-        prefactor = -w * y / sqrt2x
-        return prefactor * J1 * exp(-1j * w * psi_val) - (1j * w / (2 * x)) * func(x, w, y)
-
-    def ddfunc(x, w, y):
-        sqrt2x = sqrt(2 * x)
-        psi_val = self.psi(sqrt2x)
-        #denom = (sqrt2x**2 + core**2)**(1 - p/2)
-        #dpsi = amp * p * sqrt2x / denom
-        
-        # derivative squared term:
-        #d2psi = amp * p * (1 - p / 2) * (2 * x)**(-0.5) * (1 - 2 * x / (2 * x + core**2)) / (2 * x + core**2)**(1 - p/2)
-        
-        term1 = (w * y) / (2 * x * sqrt2x) * (2 + 1j * w) * besselj(1, w * y * sqrt2x) * exp(-1j * w * psi_val)
-        term2 = -1 / (2 * x) * (w**2 * y**2 - 1j * w / x) * self.func(x, w, y)
-        term3 = -1j * w / (2 * x) * self.dfunc(x, w, y)
-        return term1 + term2 + term3
-
-    def TakPoint(w, y):
-
-        #w = mpc(w)
-        #y = mpc(y)
-        #rs = mpc(rs)
-        a = 0.00001
-
-        if w < 1 :
-            b = 100 / w
-        elif 1 < w < 500:
-            b = 1000/w 
-        else: b = 10000/w   
-        #zzp = mpc(-1)
-        
-        
-        # mpmath.quad with complex integrand
-        zz = quad(lambda x: func2(x, w, y), [a, b], error=True, maxdegree=10)
-        zz_val = zz[0]  # integral value
-        
-        # Add tail correction terms (at b)
-        tail = (-self.func(b, w, y) / (1j * w) * exp(1j * w * b)
-                - self.dfunc(b, w, y) / (w**2) * exp(1j * w * b)
-                + self.ddfunc(b, w, y) / (1j * w**3) * exp(1j * w * b))
-        
-        zz_val += tail
-            
-        return -1j * w * exp(0.5 * 1j * w * y**2) * zz_val
-    
+def head_edges(w, y, ub, umin):
+    """Edges in [umin, ub]: one cycle of |d phase| + J0 phase per piece."""
+    n_log = int(3000 + 8 * (w / 2) * np.log(ub / umin) / (2 * np.pi))
+    n_lin = int(max(3000, 8 * w * ub / (2 * np.pi)))
+    ug = np.unique(np.concatenate([np.geomspace(umin, ub, n_log), np.linspace(umin, ub, n_lin)]))
+    phase = w * (ug - 0.5 * np.log(2 * ug))                     # exact phase of e^{iwu} x^{-iw}
+    V = np.concatenate([[0], np.cumsum(np.abs(np.diff(phase)))]) + w * y * np.sqrt(2 * ug)
+    V -= V[0]
+    edges = np.interp(np.arange(0, V[-1], 2 * np.pi), V, ug)
+    # x^{-iw} = (2u)^{-iw/2} varies on a ln-u scale near 0 even when w is small, so also
+    # cap every piece at a factor e^{0.5} in u (Gauss-Legendre cannot span decades of u).
+    geo = np.exp(np.arange(np.log(umin), np.log(ub), 0.5))
+    return np.unique(np.concatenate([edges, geo, np.linspace(umin, ub, 5), [ub]]))
 
 
+def PointMass(w, y, xb=None):
+    w, y = float(w), float(y)
+    xb = split_point(y) if xb is None else float(xb)
+    # At small w the tail decays over t ~ 1/w, much longer than u_b, and f(u_b + it) changes
+    # at t ~ u_b -- too close to t = 0 for Gauss-Laguerre. Pushing u_b out to ~20/w fixes
+    # that and is nearly free: the head has few oscillations when w is small.
+    ub = max(xb**2 / 2, 20 / w)
+    xb = np.sqrt(2 * ub)
+
+    # [0, umin] exactly. Dropping J0 and e^{iwu} there costs ~ w (1 + y^2) umin^2 in the
+    # integral, i.e. ~ w^2 (1 + y^2) umin^2 in F; this umin keeps that below ~1e-16.
+    umin = 1e-8 / (max(w, 1.0) * np.sqrt(1 + y * y))
+    sliver = 2**(-0.5j * w) * umin**(1 - 0.5j * w) / (1 - 0.5j * w)
+
+    # head [umin, ub]
+    e = head_edges(w, y, ub, umin)
+    mid, half = (e[1:] + e[:-1]) / 2, (e[1:] - e[:-1]) / 2
+    uu = (mid[:, None] + half[:, None] * GL_X[None, :]).ravel()
+    ww = (half[:, None] * GL_W[None, :]).ravel()
+    head = sliver + np.sum(ww * f(uu, w, y) * np.exp(1j * w * uu))
+
+    # tail along ub + i t, t = tau / a
+    a = w * (1 - (y + 1 / xb) / xb)
+    tail = 1j * np.exp(1j * w * ub) / a * np.sum(
+        LAG_W * f(ub + 1j * LAG_X / a, w, y) * np.exp(-(w / a - 1) * LAG_X))
+
+    return -1j * w * np.exp(0.5j * w * y**2) * (head + tail)
+
+def PointMass_many(ws, y, xb=None):
+    """F on arrays of frequencies and/or y values."""
+    ws, y = np.broadcast_arrays(np.atleast_1d(ws), np.atleast_1d(y))
+    return np.array([PointMass(w, yi, xb) for w, yi in zip(ws.flat, y.flat)]).reshape(ws.shape)
+
+def F_analytic(w, y):
+    """Exact point-lens F (same phase convention), via mpmath; for checking."""
+    from mpmath import mpf, exp, log, gamma, hyp1f1, pi
+    w, y = mpf(w), mpf(y)
+    return complex(exp(pi * w / 4) * exp(0.5j * w * log(w / 2)) * gamma(1 - 0.5j * w)
+                * hyp1f1(0.5j * w, 1, 0.5j * w * y**2, maxterms=10**6))
+
+
+# New method##
 def _worker(args):
     i, j, w, y = args
     val = PML.Point(w, y)
@@ -539,4 +543,77 @@ def compute_point_lens_grid(w_values, y_values, hdf5_filename, num_processes=Non
     logger.info(f" Saved to: {hdf5_filename}")
 
 
+#Old Asymptotic series code.
+#Now replaced with the new method
 
+""" 
+def psi(x):
+"""
+#Arbitrary precision mpmath version of the lensing potential
+"""
+
+return log(x)
+
+
+def func(x, w, y):
+# x: real integration variable (mpf)
+# w, y, amp, core, p: mpc or mpf
+sqrt2x = sqrt(2 * x)
+arg_bessel = w * y * sqrt2x
+bessel_val = besselj(0, arg_bessel)
+psi_val = psi(sqrt2x)
+return bessel_val * exp(-1j * w * psi_val)
+
+def func2(x, w, y):
+return self.func(x, w, y) * exp(1j * w * x)
+
+def dfunc(x, w, y):
+sqrt2x = sqrt(2 * x)
+psi_val = self.psi(sqrt2x)
+J1 = besselj(1, w * y * sqrt2x)
+prefactor = -w * y / sqrt2x
+return prefactor * J1 * exp(-1j * w * psi_val) - (1j * w / (2 * x)) * func(x, w, y)
+
+def ddfunc(x, w, y):
+sqrt2x = sqrt(2 * x)
+psi_val = self.psi(sqrt2x)
+#denom = (sqrt2x**2 + core**2)**(1 - p/2)
+#dpsi = amp * p * sqrt2x / denom
+
+# derivative squared term:
+#d2psi = amp * p * (1 - p / 2) * (2 * x)**(-0.5) * (1 - 2 * x / (2 * x + core**2)) / (2 * x + core**2)**(1 - p/2)
+
+term1 = (w * y) / (2 * x * sqrt2x) * (2 + 1j * w) * besselj(1, w * y * sqrt2x) * exp(-1j * w * psi_val)
+term2 = -1 / (2 * x) * (w**2 * y**2 - 1j * w / x) * self.func(x, w, y)
+term3 = -1j * w / (2 * x) * self.dfunc(x, w, y)
+return term1 + term2 + term3
+
+def TakPoint(w, y):
+
+#w = mpc(w)
+#y = mpc(y)
+#rs = mpc(rs)
+a = 0.00001
+
+if w < 1 :
+    b = 100 / w
+elif 1 < w < 500:
+    b = 1000/w 
+else: b = 10000/w   
+#zzp = mpc(-1)
+
+
+# mpmath.quad with complex integrand
+zz = quad(lambda x: func2(x, w, y), [a, b], error=True, maxdegree=10)
+zz_val = zz[0]  # integral value
+
+# Add tail correction terms (at b)
+tail = (-self.func(b, w, y) / (1j * w) * exp(1j * w * b)
+        - self.dfunc(b, w, y) / (w**2) * exp(1j * w * b)
+        + self.ddfunc(b, w, y) / (1j * w**3) * exp(1j * w * b))
+
+zz_val += tail
+    
+return -1j * w * exp(0.5 * 1j * w * y**2) * zz_val
+
+        """
