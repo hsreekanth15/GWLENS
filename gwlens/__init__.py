@@ -8,7 +8,7 @@ __version__= "0.1.0"
 #Importing solvers here to be accessed at the top-level
 
 from .lens import microlensing
-from .solver import solver1d, solver2d
+from .solver import others, solver1d,solver2d
 
 
 
