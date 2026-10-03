@@ -1290,7 +1290,9 @@ def amplification(w, y, lens, estimate_error=False, return_info=False, **kw):
 
 
 def amplification_many(ws, y, lens, estimate_error=False, **kw):
-    """F at many frequencies for one source position (one grid, one non-uniform FFT)."""
+    """F at many frequencies for one source position (one grid, one non-uniform FFT).
+    
+    """
     ws = np.atleast_1d(np.asarray(ws, dtype=float))
     wp = ws[ws > 0]
     if wp.size == 0:

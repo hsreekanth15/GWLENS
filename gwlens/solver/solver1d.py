@@ -95,11 +95,14 @@ except ImportError:
 
 # ================================================================== potentials
 class Potential:
-    """An axisymmetric lensing potential psi(x).
+    """
+    (We have to decide if we should keep this class along with solver or move to lens folder and keep the 1d and 2d lensing potentials in the lens folder. For now, we keep it here.)
+    An axisymmetric lensing potential psi(x).
 
     psi       callable, analytic (accepts complex arrays)
     psi_real  optional callable for real x > 0 in real arithmetic (speed)
     q_inf     optional lim psi'(x)/x (external convergence); None = estimate
+
     """
 
     def __init__(self, psi, psi_real=None, q_inf=None):
@@ -122,6 +125,17 @@ class Potential:
         return out
 
     def __add__(self, other):
+        """
+        Add two potentials (or a potential and a constant).
+        Parameters
+        ----------  
+        other : Potential or float
+            The potential or constant to add.
+        Returns:
+        --------
+        Potential
+            A new Potential instance representing the sum of the two potentials.    
+        """
         new = Potential.__new__(Potential)
         new._psi = self._psi + other._psi
         new._psi_real = self._psi_real + other._psi_real
@@ -130,12 +144,35 @@ class Potential:
         return new
 
     def dpsi(self, x, h=1e-20):
-        """psi'(x) for real x > 0 by the complex step (exact to rounding)."""
+        """
+        psi'(x) for real x > 0 by the complex step (exact to rounding).
+        Parameters:
+        -----------
+        x : float or array-like
+            The point(s) at which to evaluate the derivative of psi.    
+        h : float, optional
+            The step size for the complex step (default is 1e-20).
+        Returns:
+        --------
+        float or ndarray
+        The derivative of psi at the specified point(s).    
+
+        """
         x = np.asarray(x, dtype=float)
         return np.imag(self(x + 1j * h)) / h
 
     def check_analytic(self, verbose=False):
-        """Compare complex-step and finite-difference derivatives; warn if psi is not analytic."""
+        """
+        Compare complex-step and finite-difference derivatives; warn if psi is not analytic.
+        Parameters:
+        -----------
+        verbose : bool, optional
+            If True, print detailed information about the derivative mismatch and other checks (default is False).
+        Returns:
+        --------
+        float
+            The maximum relative mismatch between the complex-step and finite-difference derivatives.   
+        """
         x = np.geomspace(0.03, 30, 60)
         try:
             with np.errstate(all="ignore"):
@@ -163,19 +200,51 @@ class Potential:
 
 
 def point_mass(m=1.0):
-    """psi = m ln x."""
+    """
+    Point mass lens potential psi = m ln(x).
+
+    Parameters:
+    -----------
+    m : float, optional
+        The mass of the point mass (default is 1.0).
+
+    Returns:
+    --------
+    Potential
+        A Potential object representing the point mass lens potential.
+    """
     m = float(m)
     return Potential(lambda x: m * np.log(x), lambda x: m * np.log(x), q_inf=0.0)
 
 
 def sis(psi0=1.0):
-    """psi = psi0 x."""
+    """
+    SIS (singular isothermal sphere) lens potential psi = psi0 x.
+
+    Parameters:
+    -----------
+    psi0 : float, optional
+        The characteristic surface density (default is 1.0).
+
+    Returns:
+    --------
+    Potential
+        A Potential object representing the SIS lens potential.
+    """
     p = float(psi0)
     return Potential(lambda x: p * x, lambda x: p * x, q_inf=0.0)
 
 
 def cis(psi0=1.0, rc=0.05):
-    """Cored isothermal sphere (GLoW convention): psi0 [r + rc ln(2 rc/(r + rc))], r = sqrt(x^2 + rc^2)."""
+    """
+    Cored isothermal sphere (GLoW convention): psi0 [r + rc ln(2 rc/(r + rc))], r = sqrt(x^2 + rc^2).
+    Parameters:
+    ----------- 
+    psi0 : float, optional
+        The Amplitude (default is 1.0).
+    rc : float, optional
+        The core radius (default is 0.05).
+    """
     p, rc = float(psi0), float(rc)
 
     def f(x):
@@ -185,7 +254,20 @@ def cis(psi0=1.0, rc=0.05):
 
 
 def nfw(k=1.0, psi0=1.0):
-    """NFW: 0.5 psi0 [ln^2(v/2) + arccos^2(1/v)], v = k x  (k = xi0 / r_s)."""
+    """
+    NFW: 0.5 psi0 [ln^2(v/2) + arccos^2(1/v)], v = k x  (k = xi0 / r_s).
+    The convention is similar to GLoW refer Villarubia et. al.(put the proper reference here). 
+    Parameters:
+    -----------
+    k : float, optional
+        The scale factor (default is 1.0).
+    psi0 : float, optional
+        The characteristic surface density (default is 1.0).
+    Returns:        
+    --------
+    Potential
+        A Potential object representing the NFW lens potential.
+    """
     p, k = float(psi0), float(k)
 
     def f(x):
@@ -205,40 +287,111 @@ def nfw(k=1.0, psi0=1.0):
 
 
 def mass_sheet(kappa):
-    """psi = kappa x^2 / 2 (external convergence). Requires kappa < 1."""
+    """
+    psi = kappa x^2 / 2 (external convergence). Requires kappa < 1.
+    Parameters:
+    -----------
+    kappa : float
+        The convergence parameter (must be less than 1).    
+    Returns:
+    --------
+    Potential
+        A Potential object representing the mass sheet lens potential.
+
+    """
     k = float(kappa)
     return Potential(lambda x: 0.5 * k * x * x, lambda x: 0.5 * k * x * x, q_inf=k)
 
 
 def power_law(psi0=1.0, p=1.0):
-    """psi = psi0 x^p / p  (0 < p < 2): deflection psi0 x^(p-1); p = 1 is the SIS."""
+    """
+    psi = psi0 x^p / p  (0 < p < 2): deflection psi0 x^(p-1); p = 1 is the SIS.
+    Parameters:
+    -----------
+    psi0 : float, optional
+        The amplitude (default is 1.0).
+    p : float, optional
+        The power-law index (default is 1.0, must be between 0 and 2).
+    Returns:
+    --------
+    Potential
+        A Potential object representing the power-law lens potential.
+    """
     a, p = float(psi0), float(p)
     return Potential(lambda x: a * x**p / p, lambda x: a * np.asarray(x, float)**p / p, q_inf=0.0)
 
 
-# ================================================================== helpers
+# Some helper functions for the solver (Gauss-Legendre, Gauss-Laguerre, Chebyshev points, barycentric interpolation)
+# Much needed for the solver to work efficiently and accurately. These functions are cached for performance.
+# Keep its as a private function to avoid polluting the namespace.
+# TBD if its is to be documented and mentioned in the publication....
 _GL, _LAG = {}, {}
 
 
 def _gl(n):
+    """
+    Get Gauss-Legendre nodes and weights for n points.
+    Parameters:
+    -----------
+    n : int
+        The number of points.
+    Returns:
+    --------
+    tuple
+        A tuple containing the nodes and weights.
+    """
     if n not in _GL:
         _GL[n] = roots_legendre(n)
     return _GL[n]
 
 
 def _lag(n):
+    """
+    Get Gauss-Laguerre nodes and weights for n points.
+    Parameters:
+    -----------
+    n : int
+        The number of points.
+    Returns:
+    --------
+    tuple
+        A tuple containing the nodes and weights.
+    """
     if n not in _LAG:
         _LAG[n] = roots_laguerre(n)
     return _LAG[n]
 
 
 def _cheb_points(n):
+    """
+    Chebyshev points of the first kind in [-1, 1].
+    Parameters:
+    -----------
+    n : int
+        The number of points.
+    Returns:
+    --------
+    ndarray
+        An array of Chebyshev points.
+    """
     k = np.arange(n)
     return np.cos(np.pi * (k + 0.5) / n)
 
 
 def _bary_matrix(xc, xe):
-    """Barycentric interpolation matrix from Chebyshev points (first kind) xc to points xe."""
+    """
+    Barycentric interpolation matrix from Chebyshev points (first kind) xc to points xe.
+    Parameters:
+    -----------
+    xc : ndarray
+        Chebyshev points of the first kind.
+    xe : ndarray
+        Points to interpolate to.
+    Returns:
+    --------
+    ndarray
+        The barycentric interpolation matrix.
+    """
     n = xc.size
     wts = (-1.0) ** np.arange(n) * np.sin(np.pi * (np.arange(n) + 0.5) / n)
     d = xe[:, None] - xc[None, :]
@@ -265,6 +418,17 @@ _HC = np.sqrt(2 / np.pi) * np.exp(-0.25j * np.pi)
 
 
 def _h_asym(z):
+    """
+    h(z) = H0^(1)(z) exp(-iz) for real z >= _Z_ASYM: asymptotic expansion, smooth, ~ sqrt(2/(pi z)) e^{-i pi/4}.
+    Parameters:
+    -----------
+    z : float or ndarray
+        The input value(s) for which to compute h(z).
+    Returns:
+    --------
+    complex or ndarray
+        The computed value(s) of h(z).
+    """
     t = 1.0 / z
     t2 = t * t
     P = _HP[-1] * t2 + _HP[-2]
@@ -283,7 +447,17 @@ def _h_asym(z):
 
 
 def _h_env(z):
-    """h(z) = H0^(1)(z) exp(-iz) for real z > 0: smooth, ~ sqrt(2/(pi z)) e^{-i pi/4} for large z."""
+    """
+    h(z) = H0^(1)(z) exp(-iz) for real z > 0: smooth, ~ sqrt(2/(pi z)) e^{-i pi/4} for large z.
+    Parameters:
+    -----------
+    z : float or ndarray
+        The input value(s) for which to compute h(z).
+    Returns:
+    --------
+    complex or ndarray
+        The computed value(s) of h(z).
+    """
     z = np.asarray(z, dtype=float)
     far = z >= _Z_ASYM
     if far.all():
@@ -396,11 +570,44 @@ class Solver1D:
                   when timing of the first rows predicts a clear gain. close() stops the pool.
       threads     FINUFFT threads per call (None = 1: the transforms are small and one thread is
                   fastest; always 1 in forked or daemonic processes, e.g. bilby's npool workers).
+
+   Parameters:
+        lens        Potential object (or a callable psi(x) for the lensing potential)
+        y           source position (default: 0.0)
+        wmin, wmax  frequency range (default: 1e-3, 1e3)
+        y_radius    half-width of the source position range (default: 0.0)
+        cycles      max phase cycles per head piece (default: 8)
+        ngl         Gauss-Legendre nodes per head piece (default: 32)
+        nlag        Gauss-Laguerre nodes on the tail (default: 30)
+        n_cheb      Chebyshev frequencies per band (default: 14)
+        band_ratio  width of the frequency bands (default: 4.0)
+        xb_min      move the split outward = convergence test (default: 0.0)
+        nufft_eps   FINUFFT tolerance (default: 1e-14)
+        z_small     w y x below which J0 is used by its Taylor series (default: 1.0)
     """
 
     def __init__(self, lens, y=0.0, wmin=1e-3, wmax=1e3, y_radius=0.0, cycles=8, ngl=32, nlag=30, n_cheb=14,
                  band_ratio=4.0, xb_min=0.0, nufft_eps=1e-14, z_small=1.0, n_workers=1, threads=None,
                  interpolate=False, interp_tol=1e-10):
+        """
+        Initialize the 1D lensing solver.
+
+        Parameters:
+        -----------
+        lens :        Potential object (or a callable psi(x) for the lensing potential)
+        y           : source position (default: 0.0)
+        wmin, wmax  : frequency range (default: 1e-3, 1e3)
+        y_radius    : half-width of the source position range (default: 0.0)
+        cycles      : max phase cycles per head piece (default: 8)
+        ngl         : Gauss-Legendre nodes per head piece (default: 32)
+        nlag        : Gauss-Laguerre nodes on the tail (default: 30)
+        n_cheb      : Chebyshev frequencies per band (default: 14)
+        band_ratio  : width of the frequency bands (default: 4.0)
+        xb_min      : move the split outward = convergence test (default: 0.0)
+        nufft_eps   : FINUFFT tolerance (default: 1e-14)
+        z_small     : w y x below which J0 is used by its Taylor series (default: 1.0)
+        """
+
         if not isinstance(lens, Potential):
             lens = Potential(lens)
         if not lens._checked:
@@ -466,6 +673,30 @@ class Solver1D:
 
     # ------------------------------------------------------------------ one frequency band
     def _make_band(self, lo, hi):
+        """
+        Make the nodes and weights for one frequency band [lo, hi].
+
+        Parameters:
+        -----------
+        lo : lower frequency bound
+        hi : upper frequency bound
+        Returns:
+        --------
+        dict containing the following keys:
+        - lo, hi : frequency bounds
+        - ub : upper bound for the head (u_b = max(u_b0, 20 / lo))
+        - xb : corresponding x_b = sqrt(2 * u_b)
+        - al : decay rate for the tail
+        - psib : psi(x_b)
+        - x : array of x_j nodes for the head
+        - W : array of weights W_j for the head
+        - A : array of phases A_j = u_j - psi(x_j) for the head
+        - cx : Chebyshev points for interpolation in ln w
+        - wc : Chebyshev frequencies for interpolation in ln w
+        - xt : array of x_j nodes for the tail
+        - dx : array of differences xt - xb for the tail
+        - E : array of weights for the tail
+        """
         lens = self.lens
         ub = max(self.ub0, 20 / lo)                          # small-w rule
         xb = np.sqrt(2 * ub)
@@ -508,12 +739,26 @@ class Solver1D:
                     dx=xt - xb, E=E, zlo=np.log(lo), zhi=np.log(hi))
 
     def _bary(self, b, wb):
+        """
+        Barycentric interpolation matrix from Chebyshev points b["cx"] to frequencies wb.
+
+        Parameters:
+        -----------
+        b : dict containing the band information (from _make_band)
+        wb : array of frequencies to interpolate to
+        Returns:
+        --------
+        Interpolation matrix of shape (len(wb), len(b["cx"])) that maps values at the Chebyshev points to values at the frequencies wb.     
+        """
         if b["cx"].size == 1:
             return np.ones((wb.size, 1))
         return _bary_matrix(b["cx"], (2 * np.log(wb) - (b["zlo"] + b["zhi"])) / (b["zhi"] - b["zlo"]))
 
     # ------------------------------------------------------------------ threads and processes
     def _nthreads(self):
+        """
+        Determine the number of threads to use for FINUFFT calls.
+        """
         # The transforms here are small (thousands of nodes): one thread is faster and steadier than
         # several, so threads=None means 1. A forked process must use 1 (OpenMP deadlock otherwise).
         if self.threads is None:
@@ -585,7 +830,20 @@ class Solver1D:
 
     # ------------------------------------------------------------------ sums
     def _nufft(self, src, C, wb):
-        """sum_j C[k, j] exp(i w src_j) for every row k of C and every w in wb -> (rows, len(wb))."""
+
+        """
+        sum_j C[k, j] exp(i w src_j) for every row k of C and every w in wb -> (rows, len(wb)).
+        
+        Parameters:
+        -----------
+        src : array of source positions (x_j)
+        C : 2D array of coefficients (C[k, j])
+        wb : array of frequencies (w)
+
+        Returns:
+        --------
+        2D array of shape (C.shape[0], wb.size) containing the sums for each row of C and each frequency in wb.
+        """
         C = np.atleast_2d(C)
         if finufft is not None and wb.size >= 4 and src.size * wb.size >= 40_000:
             R = finufft.nufft1d3(src, np.ascontiguousarray(C, dtype=complex), wb, isign=1, eps=self.nufft_eps,
@@ -917,7 +1175,29 @@ def _err_kw(s, kw):
 
 
 def amplification(w, y, lens, estimate_error=False, **kw):
-    """F(w, y) at one frequency. estimate_error=True also returns |F - F(split moved x1.5, more nodes)|."""
+    """
+    F(w, y) at one frequency with optional error estimation.
+    The function is comparitively slow for many frequencies or source positions; use amplification_many() or amplification_grid() instead
+    according to your use case. The amplification_many() is faster for many frequencies at one source position, while amplification_grid() is faster for many source positions at one frequency.
+    It supports all keywords of Solver1D, e.g. nlag, ngl, n_cheb, y_radius, threads, n_workers,interpolate etc.
+
+    Parameters:
+    -----------
+    w : float
+        Frequency at which to compute the amplification factor.
+    y : float
+        Source position.
+    lens : callable
+        Lens model function.
+    estimate_error : bool, optional
+        If True, also returns an estimate of the error in the computed amplification factor.
+    **kw : dict
+        Additional keyword arguments to pass to the Solver1D class.(See the Solver1D class for available options.)  
+
+    Returns :
+    --------
+    Amplification factor F at the specified frequency. If estimate_error is True, also returns an estimate of the error in the computed amplification factor.
+    """
     w = float(w)
     if w == 0:
         return (1.0 + 0j, 0.0) if estimate_error else 1.0 + 0j
@@ -930,7 +1210,28 @@ def amplification(w, y, lens, estimate_error=False, **kw):
 
 
 def amplification_many(ws, y, lens, estimate_error=False, **kw):
-    """F on an array of frequencies for one source position (one solver, batched non-uniform FFTs)."""
+    """
+
+    F on an array of frequencies for one source position (one solver, batched non-uniform FFTs)
+    It supports all keywords of Solver1D, e.g. nlag, ngl, n_cheb, y_radius, threads, n_workers,interpolate etc.
+
+    Parameters:
+    -----------
+    ws : array_like
+        Frequencies at which to compute the amplification factor.
+    y : float
+        Source position.
+    lens : callable
+        Lens model function.
+    estimate_error : bool, optional
+        If True, also returns an estimate of the error in the computed amplification factor.
+    **kw : dict
+        Additional keyword arguments to pass to the Solver1D class.(See the Solver1D class for available options.)
+
+    Returns :   
+    --------    
+    Amplification factor F at the specified frequencies. If estimate_error is True, also returns an array of estimated errors.
+    """
     ws = np.atleast_1d(np.asarray(ws, dtype=float))
     wp = ws[ws > 0]
     if wp.size == 0:
@@ -945,21 +1246,71 @@ def amplification_many(ws, y, lens, estimate_error=False, **kw):
 
 
 def _y_range(ys):
+    """Compute the center and radius of the range of source positions.
+    Parameters:
+    -----------
+    ys : array_like
+        Array of source positions.
+    Returns:
+    --------
+    yc : float
+        Center of the range of source positions.
+    R : float
+        Radius of the range of source positions.
+    """
     ya = np.abs(np.asarray(ys, dtype=float)).ravel()
     lo, hi = ya.min(), ya.max()
     return 0.5 * (lo + hi), 0.5 * (hi - lo) * (1 + 1e-9) + 1e-12
 
 
 def amplification_profile(w, ys, lens, **kw):
-    """F at one frequency for many source positions ys (any shape)."""
+
+    """
+    (May be we should call it amplification_many_y?)
+    F at one frequency for many source positions ys (any shape).
+    It supports all keywords of Solver1D, e.g. nlag, ngl, n_cheb, y_radius, threads, n_workers,interpolate etc.
+
+    Parameters:
+    -----------
+    w : float
+        Frequency at which to compute the amplification factor.
+    ys : array_like
+        Array of source positions.
+    lens : callable
+        Lens model function.
+    **kw : dict
+        Additional keyword arguments to pass to the Solver1D class.(See the Solver1D class for available options.)
+    
+    Returns:
+    --------
+    Amplification factor F at the specified frequency for each source position in ys.   
+    """
     yc, R = _y_range(ys)
     with Solver1D(lens, yc, w, w, y_radius=R, **kw) as s:
         return s.profile(w, ys)
 
 
 def amplification_grid(ws, ys, lens, **kw):
-    """Table F[k, m] = F(ws[m], ys[k]) for many frequencies and source positions.
-    Pass n_workers=None (all cores) or n_workers=k to compute the rows in parallel."""
+    """
+    Table F[k, m] = F(ws[m], ys[k]) for many frequencies and source positions.
+    Pass n_workers=None (all cores) or n_workers=k to compute the rows in parallel.
+    It supports all keywords of Solver1D, e.g. nlag, ngl, n_cheb, y_radius, threads, n_workers,interpolate etc.
+
+    Parameters:
+    -----------
+    ws : array_like
+        Frequencies at which to compute the amplification factor.
+    ys : array_like
+        Array of source positions.      
+    lens : callable
+        Lens model function.
+    **kw : dict
+        Additional keyword arguments to pass to the Solver1D class.(See the Solver1D class for available options.)  
+    
+    Returns:
+    --------
+    2D array of shape (len(ys), len(ws)) containing the amplification factors for each combination of frequency and source position.        
+    """
     ws = np.atleast_1d(np.asarray(ws, dtype=float))
     ys = np.atleast_1d(np.asarray(ys, dtype=float)).ravel()
     wp = ws[ws > 0]
