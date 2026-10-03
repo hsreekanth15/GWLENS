@@ -17,6 +17,11 @@ dependencies = ["numpy",
 "bilby",
 "bilby_pipe"]
 
+[project.optional-dependencies]
+docs = [
+"sphinx",
+"myst-parser",]
+
 [project.scripts]
 gwlens_interpolate = "gwlens.tools.interpolator:interpolate"
 gwlens_microlensing = "gwlens.tools.executor:execute"
