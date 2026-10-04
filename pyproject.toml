@@ -16,7 +16,9 @@ dependencies = ["numpy",
 "tqdm",
 "matplotlib",
 "bilby",
-"bilby_pipe"]
+"bilby_pipe",
+"sphinx",
+"myst-parser"]
 
 [project.optional-dependencies]
 docs = [

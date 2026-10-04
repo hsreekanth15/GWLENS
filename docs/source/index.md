@@ -6,12 +6,22 @@
 GWLENS documentation
 ====================
 
-Add your content using ``reStructuredText`` syntax. See the
-`reStructuredText <https://www.sphinx-doc.org/en/master/usage/restructuredtext/index.html>`_
-documentation for details.
+## Installation
+
+GWLENS is available in PyPI and cane be installed with pip
+
+`pip install gwlens`
 
 
-.. toctree::
-   :maxdepth: 2
-   :caption: Contents:
 
+
+```{toctree}
+:maxdepth: 2
+:caption: Contents:
+
+installation
+getting_started
+rotated_tail_method
+examples
+api
+```
