@@ -7,8 +7,8 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'GWLENS'
-copyright = '2026, Sreekanth'
-author = 'Sreekanth'
+copyright = '2026'
+author = 'Sreekanth Harikumar'
 release = '0.1'
 
 # -- General configuration ---------------------------------------------------

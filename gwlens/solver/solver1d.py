@@ -1,80 +1,4 @@
-"""
-Fast amplification factor for an ARBITRARY axisymmetric lens psi(x), rotated-tail method.
-Version 2: one solver for one or many frequencies AND one or many source positions, with
-multiprocessing.
 
-    F(w, y) = -i w e^{i w y^2/2} Int_0^inf J0(w y x) e^{i w [u - psi(x)]} du,      u = x^2/2
-
-Quick start
------------
-    lens = Potential(lambda x: 0.5 * np.log(x**2 + 0.01))    # or point_mass() + nfw(...) + ...
-
-    F  = amplification(w, y, lens)                  # one frequency, one source position
-    Fw = amplification_many(ws, y, lens)            # many frequencies, one source position
-    Fy = amplification_profile(w, ys, lens)         # one frequency, many source positions
-    Fg = amplification_grid(ws, ys, lens)           # table (len(ys), len(ws))
-
-    # or keep one solver and query it as often as you like (e.g. inside a sampler):
-    s = Solver1D(lens, y=0.5, wmin=0.1, wmax=1000, y_radius=0.5)     # valid for all 0 <= y <= 1
-    s(w, y)   s.spectrum(ws, y)   s.profile(w, ys)   s.evaluate(ws, ys)
-
-What you supply
----------------
-  psi(x)   the lensing potential as a function of the radius x. It is called with REAL arrays
-           (head) and with COMPLEX arrays (tail), so write it with analytic numpy operations
-           only: + - * / **, np.log, np.sqrt, np.exp, np.arccos, np.arcsinh, ...
-           NOT np.abs, np.hypot, np.maximum, np.where, np.real, or if/else on x.
-           If the formula needs complex intermediates on the real axis (e.g. arccos of numbers
-           > 1, as for NFW inside the scale radius), cast to complex inside; the head uses the
-           real part.
-  psi_real (optional) a faster real-arithmetic version of psi for real x > 0.
-  q_inf    (optional) lim psi'(x)/x at large x (a mass sheet kappa); estimated if omitted.
-Ready-made potentials (add them with +): point_mass, sis, cis, nfw, mass_sheet, power_law.
-
-Method
-------
-Head [0, u_b]: Gauss-Legendre, 32 nodes per piece of <= 8 phase cycles (at the highest frequency of
-the band), geometric grading (ratio <= e) towards x = 0. Every node carries x_j, a weight W_j and
-A_j = u_j - psi(x_j): psi is evaluated once, when the solver is built, never per frequency.
-Frequency bands [w_hi/4, w_hi]: each has its own nodes and split u_b = max(u_b0, 20/w_lo).
-Tail u_b + i t: exact rotation (Cauchy), Gauss-Laguerre scaled by the decay rate for the largest y.
-
-Many frequencies at one y: J0 is split into Hankel functions,
-        J0(z) = [h(z) e^{iz} + conj(h(z)) e^{-iz}] / 2,      h(z) = H0^(1)(z) e^{-iz},
-where h is smooth and non-oscillating. h(w y x_j) is interpolated in ln w on n_cheb Chebyshev
-frequencies per band, so the head becomes a batch of n_cheb non-uniform FFTs (FINUFFT type 3)
-with phases A_j +- y x_j. Nodes with w y x_j <= 1 use the Taylor series of J0 in w instead (no
-interpolation). The tail is computed exactly at the same Chebyshev frequencies and interpolated.
-Many source positions at one w (profile): direct sums.
-
-Optional interpolation in w (interpolate=True or 'auto'), for very many frequencies: F(w) oscillates
-in w only through exp(i w T) at the time delays T of the images (and of a cusp or core at x = 0),
-which the solver finds on the lens axis. F(w) exp(-i w T_c), T_c = the mid time delay, is computed
-on Chebyshev panels (24 points, <= 10 rad of phase each, geometric near w = 0) and interpolated;
-every call checks the interpolant against exact values at a few frequencies and refines if needed.
-Cost: ~ one exact spectrum on ~10^3 frequencies + ~0.1 us per requested frequency.
-
-Parallel use
-------------
-    s = Solver1D(lens, y, wmin, wmax, y_radius=R, n_workers=None)   # None = all cores; default 1
-    F = s.evaluate(ws, ys)            # rows (spectra or profiles) on several processes
-    s.close()                         # or:  with Solver1D(...) as s: ...
-    Fg = amplification_grid(ws, ys, lens, n_workers=None)
-
-  * n_workers is an upper limit. evaluate() computes the first rows itself, times them, and hands
-    the rest to worker processes only if that is predicted to be clearly faster. The pool is kept
-    until close().
-  * Building the solver takes milliseconds (a few thousand psi evaluations), so it is not split.
-  * FINUFFT runs single-threaded (threads=None): the transforms are small, and one thread is both
-    faster and safe in forked processes (multi-threaded OpenMP deadlocks there).
-  * In a sampler with its own process pool (bilby npool, multiprocessing, ...) keep n_workers=1
-    and let the sampler parallelise over likelihood calls.
-  * Processes are started with 'fork' (Linux, macOS), so the lens may contain lambdas and
-    closures; where fork is unavailable (Windows) everything runs serially.
-
-FINUFFT (pip install finufft) is needed for the fast many-frequency path; without it the code
-falls back to direct sums (correct but slower).
-"""
 import os
 import math
 import time
@@ -93,7 +17,6 @@ except ImportError:
     finufft = None
 
 
-# ================================================================== potentials
 class Potential:
     """
     (We have to decide if we should keep this class along with solver or move to lens folder and keep the 1d and 2d lensing potentials in the lens folder. For now, we keep it here.)
@@ -649,6 +572,7 @@ class Solver1D:
         self.u_floor = 1e-15 / max(self.wmax, 1.0)            # [0, u_floor] contributes < 1e-15
 
         # ---- phase per unit w, V1(u) (worst case over the y range): places the head pieces
+        # Its a Phase meter here
         n_lin = int(max(3000, 3 * self.wmax * self.ub0 / (2 * np.pi)))
         ug = np.unique(np.concatenate([np.linspace(self.u_floor, self.ub0, n_lin),
                                        np.geomspace(self.u_floor, self.ub_max, 20000)]))
@@ -913,7 +837,12 @@ class Solver1D:
         return pre * 0.5 * (ph * (B @ val[1]) + (B @ val[2]) / ph)
 
     def _tail_direct(self, b, y, w):
-        """Tail at one w for an array of source positions y (direct; complex Bessel J0)."""
+        """Tail at one w for an array of source positions y (direct; complex Bessel J0).
+
+        To be tested!!!!!
+        Use with Caution!!!
+        
+        """
         t = self.LX / (b["al"] * w)
         xt = np.sqrt(2 * (b["ub"] + 1j * t))
         E = self.LW * np.exp(self.LX * (1 - 1 / b["al"]) - 1j * w * (self.lens(xt) - b["psib"]))
@@ -921,7 +850,12 @@ class Solver1D:
         return 1j / (b["al"] * w) * np.exp(1j * w * (b["ub"] - b["psib"])) * S
 
     def _head_direct(self, b, y, w):
-        """Head at one w for an array of source positions y (direct)."""
+        """Head at one w for an array of source positions y (direct).
+
+        To be tested!!!!!
+        Use with Caution!!!
+        
+        """
         y = np.atleast_1d(y)
         c = b["W"] * np.exp(1j * w * b["A"])
         out = np.empty(y.size, dtype=complex)
@@ -1038,7 +972,13 @@ class Solver1D:
         return np.array(edges)
 
     def _spectrum_interp(self, wp, y, auto=False, n_p=24):
-        """F at the frequencies wp by Chebyshev interpolation on panels, or None if not worth it/failed."""
+        """
+        F at the frequencies wp by Chebyshev interpolation on panels, or None if not worth it/failed.
+
+        Tested and keepig it here,becoz its faster than splines from scipy. And also accurate
+
+        
+        """
         T_lo, T_hi = self._time_delay_range(y)
         Tc = 0.5 * (T_lo + T_hi)
         B = 0.5 * (T_hi - T_lo) * 1.2 + 0.5                 # half bandwidth of F e^{-i w Tc}, with margin
@@ -1101,7 +1041,24 @@ class Solver1D:
     many = spectrum
 
     def profile(self, w, ys):
-        """F at one frequency for an array of source positions ys (any shape)."""
+        """
+        F at one frequency for an array of source positions ys (any shape).
+        Created with the intention of continuous wave lensing analysis so that data generation for 
+        long duration signals can be done in a fast and efficient manner for TDFstat analysis or other
+        CW search pipelines being used in the collaboration. The evaluation happens as a rapid pace..
+
+        Parameters:
+        ----------
+        w: float
+           You frquency choice for a CW signal
+        ys: array_like
+           Pass your y array (may be from Einstein Crossing time for microlensing)
+
+        Returns:
+        --------
+         Amplification factor
+        
+        """
         w = float(w)
         ys = np.abs(np.asarray(ys, dtype=float))
         shape, yr = ys.shape, ys.ravel()
@@ -1116,13 +1073,22 @@ class Solver1D:
     def evaluate(self, ws, ys):
         """Table F[k, m] = F(ws[m], ys[k]): one spectrum per source position (or one profile per
         frequency if there are more positions than frequencies). With n_workers > 1, rows beyond the
-        first ~50 ms go to worker processes when that is predicted to be clearly faster."""
+        first ~50 ms go to worker processes when that is predicted to be clearly faster.
+
+        Having the multiprocessing turned on by default is slower for certain regions of the parameter space.
+        Hence it is conditionally turned on automatically when needed.
+        
+         I
+        """
         ws = np.atleast_1d(np.asarray(ws, dtype=float))
         ys = np.abs(np.atleast_1d(np.asarray(ys, dtype=float))).ravel()
+        #Doing the usual checks
         self._check_y(ys)
         self._check_w(ws[ws > 0])
+
         by_y = ys.size <= ws.size
         n_rows = ys.size if by_y else ws.size
+
         out = np.empty((ys.size, ws.size), dtype=complex)
 
         def put(rows, val):
@@ -1130,7 +1096,7 @@ class Solver1D:
                 out[rows] = val
             else:
                 out[:, rows] = val
-
+        
         pmax = self._pmax(n_rows // 2)
         t0, k = time.perf_counter(), 0
         while k < n_rows:                                    # rows here until ~50 ms have passed

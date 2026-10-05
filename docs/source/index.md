@@ -1,10 +1,5 @@
-.. GWLENS documentation master file, created by
-   sphinx-quickstart on Tue Mar 17 16:35:21 2026.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
 
-GWLENS documentation
-====================
+GWLENS is a Python package for studying the gravitational lensing of gravitational waves. When a gravitational wave passes near a massive object such as a star, black hole, or galaxy, its path is bent and its amplitude and phase are modified. Because gravitational-wave wavelengths can be comparable to the size of the lens, geometric optics is not always enough, and wave effects like diffraction and interference become important. gwlens handles this by numerically solving the Fresnel–Kirchhoff diffraction integral to compute the frequency-dependent amplification factor, F(f), for a range of lens models. These amplification factors are then applied to unlensed waveforms and used with the Bilby inference library to search detector data for lensing signatures and estimate lens parameters. The package is being extended from transient compact-binary signals to continuous gravitational waves, such as those expected from rotating neutron stars.
 
 ## Installation
 
@@ -18,10 +13,15 @@ GWLENS is available in PyPI and cane be installed with pip
 ```{toctree}
 :maxdepth: 2
 :caption: Contents:
-
 installation
 getting_started
 rotated_tail_method
-examples
-api
+```
+
+
+```{toctree}
+:maxdepth: 2
+:caption: API Reference
+solver1d
+solver2d
 ```
