@@ -1,89 +1,4 @@
-"""
-Amplification factor for an ARBITRARY lens potential psi(x1, x2) with the rotated-tail method.
-Version 3: one solver for one or many frequencies AND one or many source positions.
 
-    F(w, y) = w/(2 pi i) Int d^2x exp{ i w [ |x - y|^2/2 - psi(x) ] }
-
-Quick start
------------
-    lens = Lens(my_psi, singular=[(x1a, x2a), (x1b, x2b)])       # or point_mass(...) + sis(...) + ...
-
-    F  = amplification(w, y, lens)                    # one frequency, one source position
-    Fw = amplification_many(ws, y, lens)              # many frequencies, one source position
-    Fy = amplification_map(w, Y1, Y2, lens)           # one frequency, many source positions (maps)
-    Fg = amplification_grid(ws, ys, lens)             # many of both: array (len(ys), len(ws))
-
-    # or keep one solver and query it as often as you like (e.g. inside a sampler):
-    s = Solver2D(lens, y=(0.1, 0.2), wmin=0.5, wmax=300, y_radius=0.3)   # all y within 0.3 of (0.1, 0.2)
-    s(w, y)  s.spectrum(ws, y)  s.map(w, Y1, Y2)  s.evaluate(ws, ys)
-
-What you supply
----------------
-  psi(x1, x2)   the lens potential, called with real AND complex arrays, so analytic numpy operations
-                only: + - * / **, np.log, np.sqrt, np.exp, np.arctan, np.arctanh, np.arccos, ...
-                Not np.abs, np.hypot, np.arctan2, np.where, np.maximum, np.real, or if/else on x.
-                If a formula needs complex intermediates on the real plane, cast to complex inside.
-  singular      the points where psi is not smooth (point masses, cusps, very small cores).
-  q_inf         optional: kappa + |gamma| of an external sheet / shear (< 1); estimated if omitted.
-
-Method
-------
-Polar coordinates about a centre c (default: the singular point nearest the source); the radial
-integral of every direction is split at r_b and its tail rotated to u_b + i t (exact, Cauchy).
-Other singular points are isolated by a C-infinity partition of unity (patches in polar coordinates
-about each point). Radial: Gauss-Legendre on pieces of <= 8 phase cycles (32 nodes). Angular:
-trapezoid rule with a node count per radial octave from the local bandwidth.
-
-Why both directions are fast
-----------------------------
-The grid is designed for a DISC of source positions |y - y_center| <= y_radius (y_radius = 0: a
-single source) and for all w <= wmax. Every node then carries y- and w-independent data: position
-x_j, weight W_j and A_j = |x_j|^2/2 - psi(x_j), because
-        |x_j - y|^2/2 - psi(x_j) = A_j - x_j.y + |y|^2/2 .
-So psi is evaluated once, and the head sum_j W_j exp(i w [A_j - x_j.y]) is
-  * for many w at one y:   a 1D non-uniform FFT (FINUFFT type 3);
-  * for many y at one w:   a 2D non-uniform FFT with targets w*y.
-The rotated tail, per direction, is tabulated once (complex psi values on Laguerre nodes scaled by
-the worst-case decay rate over the disc); per y it is interpolated in 1/w (Chebyshev), and for maps
-it is turned into extra plane waves of the same 2D FFT (windowed FFT of a smooth ridge function).
-Small frequencies (w < 20/u_b) use geometric frequency bands with their own fixed split.
-
-FINUFFT (pip install finufft) is needed for many frequencies or many source positions; without it
-the code falls back to direct sums (correct but much slower).
-
-Interpolation in w (optional, for very many frequencies)
---------------------------------------------------------
-    s = Solver2D(lens, y, wmin, wmax, y_radius=R, interpolate=True)    # or 'auto'
-    F = s.spectrum(ws, y)                         # or s.spectrum(ws, y, interpolate=True)
-F(w) oscillates in w only through exp(i w T) at the time delays T of the images (and of cusps or
-cores). These are found per source position on a grid of psi and grad psi (computed once per
-solver); F(w) exp(-i w T_mid) is computed on Chebyshev panels (24 points, <= 10 rad of phase each,
-geometric near w = 0) and interpolated, with a check against exact values at a few frequencies in
-the same transform (refined if needed). A spectrum costs a fixed part (spreading the grid nodes,
-~0.1-1 s) plus ~1-2 us per frequency; interpolation removes the second part only, so it pays from
-~10^4-10^5 frequencies on ('auto' decides).
-
-Parallel use
-------------
-    s = Solver2D(lens, y, wmin, wmax, y_radius=R, n_workers=None)   # None = all cores; default 1
-    F = s.evaluate(ws, ys)            # rows (one spectrum per y, or one map per w) on all cores
-    s.close()                         # or:  with Solver2D(...) as s: ...
-    Fg = amplification_grid(ws, ys, lens, n_workers=None)
-
-  * n_workers is an upper limit: processes are used only where they are predicted to pay off, so
-    n_workers > 1 does not slow down cheap lenses (e.g. a binary, whose grid takes ~0.3 s).
-  * Building the solver: psi is evaluated on the grid by up to n_workers processes (tasks write into
-    shared memory; the grid is bit-identical to a serial build). Worth it for expensive potentials
-    (many subhalos, elliptical profiles, ...).
-  * evaluate(ws, ys): rows are distributed over a pool of processes (one FINUFFT thread each),
-    started on first use and kept until close(). Worth it for many rows (>= about the core count).
-  * A single call s(w, y), s.spectrum(ws, y) or s.map(w, ...) is one FINUFFT transform; it uses
-    FINUFFT's own threads (threads=None: all cores; threads=k: k).
-  * In a sampler with its own process pool (bilby npool, multiprocessing, ...) keep n_workers=1:
-    the solver then uses one thread per process automatically (forked or daemonic processes).
-  * Processes are started with 'fork' (Linux, macOS), so the lens may contain lambdas and
-    closures; where fork is unavailable (Windows) everything runs serially.
-"""
 import os
 import time
 import mmap
@@ -588,6 +503,11 @@ class Solver2D:
                  nufft_eps=1e-14, low_band_ratio=4.0, max_chunk=2_000_000, tail_mode=None,
                  n_workers=1, threads=None, task_nodes=262_144, min_parallel_work=400_000,
                  interpolate=False, interp_tol=1e-10):
+        """
+
+        Parameters:
+        ----------
+        """
         if not lens._checked:
             lens.check_analytic()
         if interpolate not in (False, True, "auto"):
@@ -1094,8 +1014,10 @@ class Solver2D:
 
     # ------------------------------------------------------------------ optional interpolation in w
     def _stationary_grid(self, n=401):
-        """psi and grad psi on a square grid covering the region where images can lie (|x - c| <= x_b:
-        beyond it the radial derivative of the time delay is positive for every y of the solver)."""
+        """
+        The lens potential and its derivative  on a square grid covering the region where images can lie is computed(|x - c| <= x_b:
+        beyond it the radial derivative of the time delay is positive for every y of the solver).
+        """
         if self._tdgrid is None:
             g = np.linspace(-self.xb0, self.xb0, n)
             X1, X2 = np.meshgrid(self.c[0] + g, self.c[1] + g, indexing="ij")
@@ -1106,9 +1028,13 @@ class Solver2D:
         return self._tdgrid
 
     def _time_delay_range(self, y):
-        """(T_min, T_max) of the time delay T(x) = |x - y|^2/2 - psi(x) over its stationary points
+        """
+        This is a 2D verison of the smae time delay that you can find in the solver1d.py script.
+        (T_min, T_max) of the time delay T(x) = |x - y|^2/2 - psi(x) over its stationary points
         (images; local minima of |grad T| also catch merging/virtual images) and over singular points
-        where psi is finite (cusps, cores). F(w) oscillates in w only through exp(i w T) at these."""
+        where psi is finite (cusps, cores). F(w) oscillates in w only through exp(i w T) at these.
+        
+        """
         key = (float(y[0]), float(y[1]))
         if key in self._tdcache:
             return self._tdcache[key]
@@ -1334,17 +1260,3 @@ def amplification_grid(ws, ys, lens, **kw):
         return s.evaluate(ws, ys)
 
 
-# ================================================================== example
-if __name__ == "__main__":
-    lens = point_mass(0.5, (-0.5, 0.0)) + point_mass(0.5, (0.5, 0.0))     # equal-mass binary
-    ws = np.linspace(0.5, 300, 1000)
-    t = time.perf_counter(); F = amplification_many(ws, (0.1, 0.2), lens)
-    print(f"many w : {ws.size} frequencies at one y          {time.perf_counter() - t:.2f} s")
-    g = np.linspace(-0.3, 0.3, 200); Y1, Y2 = np.meshgrid(0.1 + g, 0.2 + g)
-    t = time.perf_counter(); Fm = amplification_map(50.0, Y1, Y2, lens)
-    print(f"many y : {Y1.size} source positions at one w    {time.perf_counter() - t:.2f} s")
-    s = Solver2D(lens, (0.1, 0.2), 0.5, 300, y_radius=0.3)
-    t = time.perf_counter()
-    for y in ((0.0, 0.1), (0.2, 0.3), (0.15, 0.05)):
-        s.spectrum(ws, y)
-    print(f"sampler: one solver, 3 new y x {ws.size} frequencies    {time.perf_counter() - t:.2f} s")

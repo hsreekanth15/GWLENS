@@ -8,3 +8,9 @@
 ```
 
 
+```{eval-rst}
+.. autoclass:: gwlens.solver1d.Potential
+   :members:
+   :special-members:
+   :show-inheritance:
+```

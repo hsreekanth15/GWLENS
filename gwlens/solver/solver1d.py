@@ -12,7 +12,7 @@ from contextlib import contextmanager
 import numpy as np
 from scipy.special import j0, y0, jv, hankel1e, hankel2e, roots_legendre, roots_laguerre
 try:
-    import finufft                      # needed for the fast many-frequency path
+    import finufft                     
 except ImportError:
     finufft = None
 
@@ -25,6 +25,19 @@ class Potential:
     psi       callable, analytic (accepts complex arrays)
     psi_real  optional callable for real x > 0 in real arithmetic (speed)
     q_inf     optional lim psi'(x)/x (external convergence); None = estimate
+
+
+    Examples
+    --------
+    Basic usage with a Potential object:
+
+    >>> import numpy as np
+    >>> from gwlens import solver1d
+    >>> def my_psi(x):
+    >>>     return np.log(1 + x**2) 
+    >>> # This potential object can be passed to the amplification factor function
+    >>> pot = solver1d.Potential(my_psi)
+
 
     """
 
@@ -87,6 +100,7 @@ class Potential:
     def check_analytic(self, verbose=False):
         """
         Compare complex-step and finite-difference derivatives; warn if psi is not analytic.
+        The rotated tail part of the code requires the function to be analytic. 
         Parameters:
         -----------
         verbose : bool, optional
@@ -121,7 +135,7 @@ class Potential:
         self._checked = True
         return mism
 
-
+### These lenses can be moved to a separate part....
 def point_mass(m=1.0):
     """
     Point mass lens potential psi = m ln(x).
@@ -287,7 +301,8 @@ def _lag(n):
 
 def _cheb_points(n):
     """
-    Chebyshev points of the first kind in [-1, 1].
+    Chebyshev points of the first kind in [-1, 1]. It is used for interpolation later.
+    Faster than calling splines in some way.
     Parameters:
     -----------
     n : int
@@ -329,8 +344,11 @@ def _bary_matrix(xc, xe):
 
 _J0_TAYLOR = np.array([(-1.0) ** k / (4.0 ** k * math.factorial(k) ** 2) for k in range(24)])
 
-# h(z) = H0^(1)(z) e^{-iz} = sqrt(2/(pi z)) e^{-i pi/4} sum_k i^k a_k z^-k  (DLMF 10.17.5), 20 terms:
+# Hankel expansion taken from here (https://dlmf.nist.gov/10.17). See 10.17.5 for more details.
+# It coverges very fast so only few terms are needed.
 # relative error < 1e-15 for z >= 25. Below that: J0 + i Y0 from scipy.
+#The below factors are used in the functions _h_asym() and it is hardcoded because the scipy's default function call is 130ns per value
+# _h_asym() function is called a million times so it is needed to speed things up....
 _Z_ASYM = 25.0
 _HA = [1.0]
 for _k in range(1, 20):
@@ -343,6 +361,7 @@ _HC = np.sqrt(2 / np.pi) * np.exp(-0.25j * np.pi)
 def _h_asym(z):
     """
     h(z) = H0^(1)(z) exp(-iz) for real z >= _Z_ASYM: asymptotic expansion, smooth, ~ sqrt(2/(pi z)) e^{-i pi/4}.
+    A faster version...
     Parameters:
     -----------
     z : float or ndarray
@@ -371,6 +390,8 @@ def _h_asym(z):
 
 def _h_env(z):
     """
+    This function uses both the series expansion of the Bessel function used above and also the
+    scipy functions, pickups the faster method which is accurate.
     h(z) = H0^(1)(z) exp(-iz) for real z > 0: smooth, ~ sqrt(2/(pi z)) e^{-i pi/4} for large z.
     Parameters:
     -----------
@@ -389,6 +410,7 @@ def _h_env(z):
     if far.any():
         out[far] = _h_asym(z[far])
     zn = z[~far]
+    #Exact definition is used here and it is called from scipy 
     out[~far] = (j0(zn) + 1j * y0(zn)) * np.exp(-1j * zn)
     return out
 
@@ -409,11 +431,15 @@ def _warn_once(key, msg):
 # and worker processes never start processes of their own.
 _IMPORT_PID = os.getpid()
 _WORKER = {}
-_SPAWN_COST, _PAR_EFF, _MIN_GAIN = 0.02, 0.75, 0.8      # cost model (pessimistic on purpose)
+_SPAWN_COST, _PAR_EFF, _MIN_GAIN = 0.02, 0.75, 0.8      # cost model (made to be pessimistic on purpose)
 
 
 def available_cores():
-    """Number of CPU cores this process may use."""
+    """
+    Calculate the number of CPU cores this process may use.
+    It is used for the optimization purpose. The default use of the all cores creates an overhead and sometimes slows done the 
+    amplification factor caculation..
+    """
     try:
         return len(os.sched_getaffinity(0))
     except AttributeError:
@@ -464,8 +490,9 @@ def _shutdown_pool(ex, pid):
 
 # ================================================================== solver
 class Solver1D:
-    """Everything that does not depend on (w, y), for all wmin <= w <= wmax and all source positions
-    |y - y0| <= y_radius (y_radius = 0: the single position y). F depends on |y| only.
+    """
+    Everything that does not depend on (w, y), for all wmin <= w <= wmax and all source positions
+    
 
     Evaluation (all reuse the same nodes; psi is never evaluated again for the head):
       s(w, y=None)            F at one frequency, one source position (default: y0)
@@ -473,8 +500,8 @@ class Solver1D:
       s.profile(w, ys)        one frequency, many source positions    -> direct sums
       s.evaluate(ws, ys)      table (len(ys), len(ws))
 
-    Accuracy/tuning (defaults give ~1e-12): cycles, ngl (phase cycles / Gauss-Legendre nodes per
-    head piece), nlag (Laguerre nodes on the tail), n_cheb (Chebyshev frequencies per band),
+    Accuracy/tuning  parameters (defaults give ~1e-12): 
+    cycles, ngl (phase cycles / Gauss-Legendre nodes per head piece), nlag (Laguerre nodes on the tail), n_cheb (Chebyshev frequencies per band),
     band_ratio (width of the frequency bands), xb_min (move the split outward = convergence test),
     nufft_eps (FINUFFT tolerance), z_small (w y x below which J0 is used by its Taylor series).
     PE_SETTINGS: lighter settings for parameter estimation (accuracy ~1e-8).
@@ -494,19 +521,90 @@ class Solver1D:
       threads     FINUFFT threads per call (None = 1: the transforms are small and one thread is
                   fastest; always 1 in forked or daemonic processes, e.g. bilby's npool workers).
 
-   Parameters:
-        lens        Potential object (or a callable psi(x) for the lensing potential)
-        y           source position (default: 0.0)
-        wmin, wmax  frequency range (default: 1e-3, 1e3)
-        y_radius    half-width of the source position range (default: 0.0)
-        cycles      max phase cycles per head piece (default: 8)
-        ngl         Gauss-Legendre nodes per head piece (default: 32)
-        nlag        Gauss-Laguerre nodes on the tail (default: 30)
-        n_cheb      Chebyshev frequencies per band (default: 14)
-        band_ratio  width of the frequency bands (default: 4.0)
-        xb_min      move the split outward = convergence test (default: 0.0)
-        nufft_eps   FINUFFT tolerance (default: 1e-14)
-        z_small     w y x below which J0 is used by its Taylor series (default: 1.0)
+    Parameters
+    ----------
+    lens : Potential or callable
+        Potential object or a callable ``psi(x)`` representing the lensing potential.
+        If callable, should accept a single array argument and return potential values.
+    y : float, optional
+        Source position in the lens plane (default: 0.0).
+    wmin : float, optional
+        Minimum frequency of the integration range (default: 1e-3).
+    wmax : float, optional
+        Maximum frequency of the integration range (default: 1e3).
+    y_radius : float, optional
+        Half-width of the source position range for parameter variation studies
+        (default: 0.0).
+    cycles : int, optional
+        Maximum number of phase cycles per integration head piece. Affects the
+        granularity of the integration scheme (default: 8).
+    ngl : int, optional
+        Number of Gauss-Legendre quadrature nodes per head piece. Higher values
+        increase accuracy but raise computational cost (default: 32).
+    nlag : int, optional
+        Number of Gauss-Laguerre quadrature nodes on the tail portion of the
+        integration domain (default: 30).
+    n_cheb : int, optional
+        Number of Chebyshev polynomial frequencies per frequency band (default: 14).
+    band_ratio : float, optional
+        Width ratio defining the frequency bands. Controls the logarithmic spacing
+        of frequency intervals (default: 4.0).
+    xb_min : float, optional
+        Parameter to shift the split point outward for convergence testing
+        and validation. Used in adaptive refinement (default: 0.0).
+    nufft_eps : float, optional
+        Tolerance parameter for the FINUFFT (Fast Implicit Nonuniform Fast
+        Fourier Transform) algorithm. Lower values increase accuracy but raise
+        computation time (default: 1e-14).
+    z_small : float, optional
+        Threshold below which the Bessel function J0 is approximated using
+        its Taylor series expansion. Applies to ``w``, ``y``, and ``x`` values
+        independently (default: 1.0).
+    n_workers : int, optional
+        Number of CPU cores for parallel processing. If ``None``, uses all
+        available cores (default: None).
+    interpolate : bool, optional
+        If ``True``, applies interpolation to the calculated frequencies.
+        Useful for parameter estimation and smoothing results. Can reduce
+        artifacts at band boundaries (default: False).
+ 
+    Returns
+    -------
+    result : ndarray
+        Array containing the computed lensing values at the specified parameters.
+        Shape and dtype depend on input dimensionality.
+ 
+    Raises
+    ------
+    ValueError
+        If ``wmin >= wmax`` or if ``y_radius < 0``.
+    TypeError
+        If ``lens`` is neither a Potential object nor callable.
+    RuntimeError
+        If FINUFFT initialization fails or convergence cannot be achieved.
+ 
+    Notes
+    -----
+    This function uses a sophisticated adaptive quadrature scheme that combines:
+ 
+    - **Gauss-Legendre integration** for the main oscillatory regime with
+      automatic splitting based on phase cycles
+    - **Gauss-Laguerre integration** for tail behavior capturing asymptotic
+      contributions with exponential decay
+    - **Chebyshev polynomial approximations** for frequency interpolation
+      across logarithmic bands
+ 
+    The FINUFFT tolerance (``nufft_eps``) directly affects both accuracy and
+    computation time. Recommended values:
+ 
+    - ``1e-14`` for high-precision calculations
+    - ``1e-10`` for moderate precision with faster computation
+    - ``1e-6`` for rapid prototyping
+ 
+    Convergence with respect to ``ngl`` and ``nlag`` should be checked for
+    new applications by varying these parameters.
+ 
+
     """
 
     def __init__(self, lens, y=0.0, wmin=1e-3, wmax=1e3, y_radius=0.0, cycles=8, ngl=32, nlag=30, n_cheb=14,
@@ -535,21 +633,36 @@ class Solver1D:
             lens = Potential(lens)
         if not lens._checked:
             lens.check_analytic()
+
+        
         self.lens = lens
+
         self.y0, self.Yr = abs(float(y)), float(y_radius)
         self.y_lo, self.y_hi = max(0.0, self.y0 - self.Yr), self.y0 + self.Yr
+
         self.wmin, self.wmax = float(wmin), float(wmax)
+
         if not (0 < self.wmin <= self.wmax):
             raise ValueError("need 0 < wmin <= wmax")
-        self.cycles, self.ngl, self.nlag, self.n_cheb = int(cycles), int(ngl), int(nlag), int(n_cheb)
-        self.nufft_eps, self.z_small = float(nufft_eps), float(z_small)
+        
+        self.cycles = int(cycles)
+        self.ngl = int(ngl)
+        self.nlag = int(nlag)
+        self.n_cheb = int(n_cheb)
+        self.nufft_eps = float(nufft_eps)
+        self.z_small =  float(z_small)
         self.n_workers = available_cores() if (n_workers is None or n_workers <= 0) else int(n_workers)
+
         self.threads = None if threads is None else max(1, int(threads))
+
         if interpolate not in (False, True, "auto"):
             raise ValueError("interpolate must be False, True or 'auto'")
-        self.interpolate, self.interp_tol = interpolate, float(interp_tol)
+        
+        self.interpolate = interpolate
+        self.interp_tol = float(interp_tol)
         self._tdcache = {}
         self._pool = self._pool_fin = self._pool_pid = None
+
         self.GX, self.GW = _gl(self.ngl)
         self.LX, self.LW = _lag(self.nlag)
 
@@ -559,19 +672,28 @@ class Solver1D:
             q = max(float(lens.dpsi(R) / R) for R in (1e3, 1e4))
         if q >= 1:
             raise ValueError(f"lim psi'/x = {q:.3f} >= 1: the tail cannot be rotated upward.")
+
+        #Threshold for splitting the integration into head and tail
         thr = max(0.5, 0.5 * (1 + q))
+        #initial guess
         xb = max(3.0, 2 * self.y_hi, float(xb_min))
+        #Loop to find the optimum point
         for _ in range(400):
             if (self.y_hi + lens.dpsi(xb)) / xb <= thr:
                 break
             xb *= 1.1
         else:
             raise RuntimeError("no split point found; does psi grow faster than x^2/2?")
-        self.q_inf, self.xb0, self.ub0 = q, xb, xb * xb / 2
+        
+        self.q_inf = q 
+        self.xb0 = xb
+        self.ub0 = xb * xb / 2
+
         self.ub_max = max(self.ub0, 20 / self.wmin)
+
         self.u_floor = 1e-15 / max(self.wmax, 1.0)            # [0, u_floor] contributes < 1e-15
 
-        # ---- phase per unit w, V1(u) (worst case over the y range): places the head pieces
+        # ---- phase per unit w, V1(u) (worst case over the y range), places the head pieces
         # Its a Phase meter here
         n_lin = int(max(3000, 3 * self.wmax * self.ub0 / (2 * np.pi)))
         ug = np.unique(np.concatenate([np.linspace(self.u_floor, self.ub0, n_lin),
@@ -678,7 +800,7 @@ class Solver1D:
             return np.ones((wb.size, 1))
         return _bary_matrix(b["cx"], (2 * np.log(wb) - (b["zlo"] + b["zhi"])) / (b["zhi"] - b["zlo"]))
 
-    # ------------------------------------------------------------------ threads and processes
+    # threads and processes
     def _nthreads(self):
         """
         Determine the number of threads to use for FINUFFT calls.
@@ -728,12 +850,12 @@ class Solver1D:
     def __exit__(self, *exc):
         self.close()
 
-    def __getstate__(self):                     # pickling (e.g. with cloudpickle) drops the process pool
+    def __getstate__(self):                     
         d = self.__dict__.copy()
         d["_pool"] = d["_pool_fin"] = d["_pool_pid"] = None
         return d
 
-    # ------------------------------------------------------------------ checks
+    # checks for w and y 
     def _check_y(self, y):
         y = np.abs(np.asarray(y, dtype=float))
         tol = 1e-9 * max(self.y_hi, 1.0) + 1e-12
@@ -756,7 +878,7 @@ class Solver1D:
     def _nufft(self, src, C, wb):
 
         """
-        sum_j C[k, j] exp(i w src_j) for every row k of C and every w in wb -> (rows, len(wb)).
+        $sum_j C[k, j] exp(i w src_j)$ for every row k of C and every w in wb -> (rows, len(wb)).
         
         Parameters:
         -----------

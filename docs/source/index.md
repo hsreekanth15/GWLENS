@@ -18,6 +18,17 @@ getting_started
 rotated_tail_method
 ```
 
+```{toctree}
+:maxdepth: 2
+:caption: Examples
+axisymmetric_lenses
+non-axisymmetric_lens
+creating_your_lens
+cbc_lensed_parameter_estimation
+cw_datageneration
+cw_microlensing
+```
+
 
 ```{toctree}
 :maxdepth: 2

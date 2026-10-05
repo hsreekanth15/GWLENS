@@ -10,8 +10,10 @@
 ## Potential 2D
 
 ```{eval-rst}
-.. autoclass:: gwlens.solver2d.Potential
+.. autoclass:: gwlens.solver2d.Lens
    :members:
+   :private-members:
+   :special-members:
    :show-inheritance:
 ```
 
