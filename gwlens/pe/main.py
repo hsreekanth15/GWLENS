@@ -66,7 +66,11 @@ def lookup_table_path(args, model, ranges):
 
 
 def apply_lensing_options(args):
-    """Validate the lensing options and fold them into standard bilby_pipe args."""
+
+    """
+    Validate the lensing options and fold them into standard bilby_pipe args.
+    
+    """
     if not (args.lensed_injection or args.lensed_recovery):
         if args.lens_model is not None:
             logger.warning("GWLENS: lensed-injection and lensed-recovery are False: running unlensed")
