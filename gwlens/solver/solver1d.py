@@ -82,6 +82,7 @@ class Potential:
     def dpsi(self, x, h=1e-20):
         """
         psi'(x) for real x > 0 by the complex step (exact to rounding).
+        This is better understood by Taylor expansion in the complex plane.
         Parameters:
         -----------
         x : float or array-like
@@ -226,6 +227,9 @@ def nfw(k=1.0, psi0=1.0):
 def mass_sheet(kappa):
     """
     psi = kappa x^2 / 2 (external convergence). Requires kappa < 1.
+    The solver fails for kappa > 1 with a warning. 
+    The q_inf parameter exists in the potential to deal with such lenses.
+
     Parameters:
     -----------
     kappa : float
@@ -342,13 +346,13 @@ def _bary_matrix(xc, xe):
     return M
 
 
-_J0_TAYLOR = np.array([(-1.0) ** k / (4.0 ** k * math.factorial(k) ** 2) for k in range(24)])
-
 # Hankel expansion taken from here (https://dlmf.nist.gov/10.17). See 10.17.5 for more details.
 # It coverges very fast so only few terms are needed.
 # relative error < 1e-15 for z >= 25. Below that: J0 + i Y0 from scipy.
 #The below factors are used in the functions _h_asym() and it is hardcoded because the scipy's default function call is 130ns per value
 # _h_asym() function is called a million times so it is needed to speed things up....
+
+_J0_TAYLOR = np.array([(-1.0) ** k / (4.0 ** k * math.factorial(k) ** 2) for k in range(24)])
 _Z_ASYM = 25.0
 _HA = [1.0]
 for _k in range(1, 20):
@@ -717,9 +721,10 @@ class Solver1D:
                          bands=[(b["lo"], b["hi"], b["ub"], b["x"].size) for b in self.bands],
                          n_nodes=int(sum(b["x"].size for b in self.bands)))
 
-    # ------------------------------------------------------------------ one frequency band
+
     def _make_band(self, lo, hi):
         """
+        All weights for the head and tail integration are chosen here in this function.
         Make the nodes and weights for one frequency band [lo, hi].
 
         Parameters:
@@ -757,27 +762,40 @@ class Solver1D:
         rate = (np.diff(self.V1) / np.diff(self.ug))[:m]   # phase per unit w per unit u, up to ub
         i0 = np.clip(np.searchsorted(self.ug, e[:-1], side="right") - 1, 0, rate.size - 1)
         peak = np.maximum.reduceat(rate, i0)                 # largest rate in each piece
+
         n_sub = np.maximum(1, np.ceil(peak * np.diff(e) * hi / (1.25 * 2 * np.pi * self.cycles))).astype(int)
         if np.any(n_sub > 1):
             e = np.unique(np.concatenate([e] + [np.linspace(e[k], e[k + 1], n + 1) for k, n in enumerate(n_sub) if n > 1]))
-        mid, half = (e[1:] + e[:-1]) / 2, (e[1:] - e[:-1]) / 2
+
+        #Mid and the half points in each head piece    
+        mid = (e[1:] + e[:-1]) / 2
+        half = (e[1:] - e[:-1]) / 2
+
+        #32 Legendre points mapped into each piece and their weights
         u = (mid[:, None] + half[:, None] * self.GX[None, :]).ravel()
         W = (half[:, None] * self.GW[None, :]).ravel()
+
         x = np.sqrt(2 * u)
         with np.errstate(all="ignore"):
             A = u - lens.real(x)
+        
         # tail: decay rate for the largest y, psi at the complex Laguerre points of every
         # Chebyshev frequency of the band (y-independent)
+
+        #The decay term alpha
         al = 1 - (self.y_hi + float(lens.dpsi(xb))) / xb
         if al <= 0:
             raise RuntimeError("tail does not decay; increase xb_min")
+        
+        #The value of the potential at the split point
         psib = float(np.real(np.asarray(lens(np.array([xb + 0j])))).ravel()[0])
         if hi / lo < 1 + 1e-12:
             cx, zc = np.zeros(1), np.array([np.log(hi)])
         else:
-            cx = _cheb_points(self.n_cheb)
+            cx = _cheb_points(self.n_cheb) #Cheb points for interpolation in ln w
             zc = 0.5 * (np.log(lo) + np.log(hi)) + 0.5 * (np.log(hi) - np.log(lo)) * cx
         wc = np.exp(zc)
+        
         t = self.LX[None, :] / (al * wc[:, None])
         xt = np.sqrt(2 * (ub + 1j * t))
         E = self.LW[None, :] * np.exp(self.LX[None, :] * (1 - 1 / al) - 1j * wc[:, None] * (lens(xt) - psib))
@@ -896,7 +914,7 @@ class Solver1D:
                                  **self._fopts())
             return np.reshape(R, (C.shape[0], wb.size))
         if finufft is None and wb.size * src.size > 2_000_000:
-            _warn_once("nufft", "finufft is not installed: frequency sums are done directly (slower). pip install finufft")
+            _warn_once("nufft", "finufft is not installed: frequency sums are done directly (slower).")
         out = np.empty((C.shape[0], wb.size), dtype=complex)
         step = max(1, 2_000_000 // max(src.size, 1))
         for s in range(0, wb.size, step):
@@ -987,7 +1005,11 @@ class Solver1D:
         return out
 
     def _spectrum_direct(self, b, y, wb):
-        """Head + tail at the frequencies wb of band b for one y, by direct sums (few frequencies)."""
+        """
+        Head + tail at the frequencies wb of band b for one y, by direct sums (few frequencies).
+        Use of Gauss Legendre and Gauss Laguerre quadrature here
+        
+        """
         x, W, A = b["x"], b["W"], b["A"]
         head = np.empty(wb.size, dtype=complex)
         step = max(1, 1_000_000 // x.size)
@@ -1015,7 +1037,7 @@ class Solver1D:
                 + 3.5e-8 * (10 * n_small + 2 * nc * (n_mid + n_far)) + 3e-7 * m)
         return fast < direct
 
-    # ------------------------------------------------------------------ public evaluation
+    #  To be used by the user
     def spectrum(self, ws, y=None, interpolate=None):
         """F at an array of frequencies for one source position y (default: y0).
         interpolate: None = the solver's setting; True / False / 'auto' (see the class docstring)."""
@@ -1049,7 +1071,7 @@ class Solver1D:
                 total[sel] = self._spectrum_direct(b, y, wb)
         return -1j * wp * np.exp(0.5j * wp * y * y) * total
 
-    # ------------------------------------------------------------------ optional interpolation in w
+   #optional interpolation in w
     def _time_delay_range(self, y):
         """(T_min, T_max) of the Fermat potential T(s) = (s - y)^2/2 - psi(|s|) on the lens axis at the
         real images, at the points where images merge (caustics) and at s = 0 if psi(0) is finite.

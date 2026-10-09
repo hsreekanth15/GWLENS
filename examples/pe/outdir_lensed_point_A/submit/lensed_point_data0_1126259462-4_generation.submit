@@ -1,0 +1,27 @@
+universe = local
+executable = /Users/sreekanthharikumar/miniconda3/envs/gwlens/bin/bilby_pipe_generation
+request_memory = 8GB
+request_disk = 5GB
+request_cpus = 1
+initialdir = /Users/sreekanthharikumar/Documents/codes/python/GWLENS/examples/pe
+notification = Never
+requirements = 
+should_transfer_files = YES
+transfer_input_files = /Users/sreekanthharikumar/Documents/codes/python/GWLENS/examples/pe/outdir_lensed_point_A/lensed_point_config_complete.ini,/Users/sreekanthharikumar/Documents/codes/python/GWLENS/examples/pe/example_lens.prior
+transfer_output_files = outdir_lensed_point_A
+when_to_transfer_output = ON_EXIT_OR_EVICT
+preserve_relative_paths = True
+stream_error = True
+stream_output = True
+log = outdir_lensed_point_A/log_data_generation/lensed_point_data0_1126259462-4_generation.log
+output = outdir_lensed_point_A/log_data_generation/lensed_point_data0_1126259462-4_generation.out
+error = outdir_lensed_point_A/log_data_generation/lensed_point_data0_1126259462-4_generation.err
+accounting_group = ligo.dev.o4.cbc.pe.bilby
+priority = 0
+environment = "HDF5_USE_FILE_LOCKING=FAlSE OMP_NUM_THREADS=1 OMP_PROC_BIND=false GWDATAFIND_SERVER=https://datafind.igwn.org"
+MY.flock_local = True
+MY.DESIRED_Sites = "nogrid"
+retry_request_memory_increase = RequestMemory * 2
+retry_request_memory_max = 64.0GB
+arguments = $(ARGS)
+queue

@@ -1,0 +1,13 @@
+JOB lensed_point_data0_1126259462-4_generation_arg_0 outdir_lensed_point/submit/lensed_point_data0_1126259462-4_generation.submit
+VARS lensed_point_data0_1126259462-4_generation_arg_0 ARGS="outdir_lensed_point/lensed_point_config_complete.ini --label lensed_point_data0_1126259462-4_generation --idx 0 --trigger-time 1126259462.4 --outdir outdir_lensed_point"
+Retry lensed_point_data0_1126259462-4_generation_arg_0 3
+JOB lensed_point_data0_1126259462-4_analysis_H1L1_arg_0 outdir_lensed_point/submit/lensed_point_data0_1126259462-4_analysis_H1L1.submit
+VARS lensed_point_data0_1126259462-4_analysis_H1L1_arg_0 ARGS="outdir_lensed_point/lensed_point_config_complete.ini --outdir outdir_lensed_point --detectors H1 --detectors L1 --label lensed_point_data0_1126259462-4_analysis_H1L1 --data-dump-file outdir_lensed_point/data/lensed_point_data0_1126259462-4_generation_data_dump.pickle --sampler dynesty"
+Retry lensed_point_data0_1126259462-4_analysis_H1L1_arg_0 3
+JOB lensed_point_data0_1126259462-4_analysis_H1L1_final_result_arg_0 outdir_lensed_point/submit/lensed_point_data0_1126259462-4_analysis_H1L1_final_result.submit
+VARS lensed_point_data0_1126259462-4_analysis_H1L1_final_result_arg_0 ARGS="--result outdir_lensed_point/result/lensed_point_data0_1126259462-4_analysis_H1L1_result.hdf5 --outdir outdir_lensed_point/final_result --extension hdf5 --max-samples 20000 --lightweight --save"
+ENV GET HTGETTOKENOPTS
+
+#Inter-job dependencies
+Parent lensed_point_data0_1126259462-4_generation_arg_0 Child lensed_point_data0_1126259462-4_analysis_H1L1_arg_0
+Parent lensed_point_data0_1126259462-4_analysis_H1L1_arg_0 Child lensed_point_data0_1126259462-4_analysis_H1L1_final_result_arg_0

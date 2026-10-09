@@ -1,36 +1,19 @@
-from bilby.gw.source import lal_binary_black_hole
+import importlib
+import inspect
+from collections import OrderedDict
+from dataclasses import dataclass, replace
 from functools import lru_cache
-from collections import namedtuple
+
 import numpy as np
-import h5py
-from gwlens.tools import logutils
-import configparser
-import os
-from scipy.interpolate import RectBivariateSpline
-from astropy import units as u
-from scipy.constants import c,G
-##Msun = 1.988e+30
-##constant = (8*np.pi*G/c**3)*Msun
-
-
-#### To implement
-
-# Make the lensed waveform model-independent
-# The lens specifi dimensionless frequencies should be called from lens folder and the corresponding modules there
-# Should allow for arbitrary kwargs as different lenses have different number of parameters.
-
-##  Implement a CLI for inference -> Read the .ini file -> Get the lens_name and lookup_table path -> 
-## The CLI entry point could be named as gwlens_pipe_analysis *.ini
+from bilby.core.utils import logger
+from bilby.gw.waveform_generator import WaveformGenerator
+from scipy.constants import G, c
+from scipy.interpolate import BSpline, make_interp_spline
 
 SOLAR_MASS = 1.98892e30  # kg
 
-# w = 8 * pi * G * MLz[Msun] * f / c^3  (point lens dimensionless frequency)
+# w = 8 * pi * G * MLz[Msun] * f / c^3
 POINT_LENS_W_CONSTANT = 8 * np.pi * G * SOLAR_MASS / c ** 3
-
-LENS_MODELS = {}
- 
-_Lens = namedtuple("_Lens", ["dimensionless_frequency", "parameters"])
-_Splines = namedtuple("_Splines", ["real", "imag", "w_min", "w_max", "y_min", "y_max"])
 
 DEFAULT_WAVEFORM_KWARGS = dict(
     waveform_approximant="IMRPhenomXAS",
@@ -42,287 +25,415 @@ DEFAULT_WAVEFORM_KWARGS = dict(
     pn_phase_order=-1,
     pn_amplitude_order=0,
 )
- 
-# Keys injected by gwlens_pipe that must not be forwarded to lalsimulation
-_GWLENS_KWARGS = ("lens_lookup_table", "lens_model")
- 
 
 
-@lru_cache(maxsize=None)
-def _load_splines(lookup_table):
-    """Load and cache the real/imag interpolants of F(w, y) from an HDF5 file.
-
-    The file is expected to contain ``w_values`` (1D), ``y_values`` (1D) and
-    ``results`` with shape ``(len(w), len(y), 2)`` holding the real and
-    imaginary parts of the amplification factor. Cached per path so repeated
-    waveform evaluations reuse the same splines.
-    """
-    with h5py.File(lookup_table, "r") as f:
-        w_values = f["w_values"][:]
-        y_values = f["y_values"][:]
-        data = f["results"][:]
-    real = RectBivariateSpline(w_values, y_values, data[:, :, 0], kx=3, ky=3)
-    imag = RectBivariateSpline(w_values, y_values, data[:, :, 1], kx=3, ky=3)
-    return _Splines(real, imag, w_values[0], w_values[-1], y_values[0], y_values[-1])
-
-def _pop_lensing_kwargs(kwargs):
-    lookup_table = kwargs.pop("lens_lookup_table", None)
-    kwargs.pop("lens_model", None)
-    if lookup_table is None:
-        raise ValueError(
-            "GWLENS source model called without 'lens_lookup_table' in the "
-            "waveform arguments. Set 'lens-lookup-table' in your ini file "
-            "(or 'lens_lookup_table' in waveform-arguments-dict)."
-        )
-    return lookup_table
- 
- 
-def _unlensed_waveform(frequency_array, mass_1, mass_2, luminosity_distance,
-                       a_1, tilt_1, phi_12, a_2, tilt_2, phi_jl, theta_jn,
-                       phase, kwargs):
-    waveform_kwargs = dict(DEFAULT_WAVEFORM_KWARGS,
-                           maximum_frequency=frequency_array[-1])
-    waveform_kwargs.update(kwargs)
-    return lal_binary_black_hole(
-        frequency_array=frequency_array, mass_1=mass_1, mass_2=mass_2,
-        luminosity_distance=luminosity_distance, theta_jn=theta_jn,
-        phase=phase, a_1=a_1, a_2=a_2, tilt_1=tilt_1, tilt_2=tilt_2,
-        phi_12=phi_12, phi_jl=phi_jl, **waveform_kwargs)
- 
- 
-def amplification_factor(w, y, lookup_table_path, clip_to_table=True):
-    splines = _load_splines(lookup_table_path)
-    w = np.asarray(w, dtype=float)
-    if clip_to_table:
-        w_eval = np.clip(w, splines.w_min, splines.w_max)
-        y_eval = float(np.clip(y, splines.y_min, splines.y_max))
+def _solver_module(solver):
+    if solver == "1d":
+        from gwlens import solver1d as module
     else:
-        w_eval, y_eval = w, float(y)
-    return splines.real.ev(w_eval, y_eval) + 1j * splines.imag.ev(w_eval, y_eval)
-
-''' 
-def amplification_factor(frequency_array, lens_model, lookup_table, parameters):
-    """Compute the complex wave-optics amplification factor F(f).
- 
-    The lens parameters are *popped* from ``parameters`` in place, so the
-    remaining dictionary is safe to forward to an unlensed bilby source model.
- 
-    Parameters
-    ----------
-    frequency_array: array_like
-        Frequencies at which to evaluate F, in Hz.
-    lens_model: str
-        Name of a registered lens model.
-    lookup_table: str
-        Path to the HDF5 file holding F(w, y) for this lens model.
-    parameters: dict
-        Mutable parameter dictionary. The keys declared by the lens model are
-        removed and used here.
- 
-    Returns
-    -------
-    numpy.ndarray
-        Complex amplification factor, same length as ``frequency_array``.
-    """
-    try:
-        lens = LENS_MODELS[lens_model]
-    except KeyError:
-        raise ValueError(
-            f"Unknown lens model '{lens_model}'. "
-            f"Registered models: {sorted(LENS_MODELS)}"
-        )
- 
-    lens_parameters = {name: parameters.pop(name) for name in lens.parameters}
-    y = lens_parameters["y"]
-    w = lens.dimensionless_frequency(frequency_array, **lens_parameters)
- 
-    splines = _load_splines(lookup_table)
-    return splines.real(w, y)[:, 0] + 1j * splines.imag(w, y)[:, 0]
-'''
+        from gwlens import solver2d as module
+    return module
 
 
-def _apply_amplification(waveform_dict, F):
-    if waveform_dict is None:  # lal error caught upstream
-        return None
-    for mode in ("plus", "cross"):
-        waveform_dict[mode] = waveform_dict[mode] * F
-    return waveform_dict
- 
- 
-def point_lensed_lal_binary_black_hole(
-        frequency_array, mass_1, mass_2, luminosity_distance,
-        a_1, tilt_1, phi_12, a_2, tilt_2, phi_jl, theta_jn, phase,
-        MLz, y, **kwargs):
-    """Point-mass lens. Extra sampled parameters: MLz [Msun], y."""
-    lookup_table = _pop_lensing_kwargs(kwargs)
-    w = POINT_LENS_W_CONSTANT * MLz * frequency_array
-    F = amplification_factor(w, y, lookup_table)
-    waveform_dict = _unlensed_waveform(
-        frequency_array, mass_1, mass_2, luminosity_distance,
-        a_1, tilt_1, phi_12, a_2, tilt_2, phi_jl, theta_jn, phase, kwargs)
-    return _apply_amplification(waveform_dict, F)
+@dataclass(frozen=True)
+class LensModel:
+    name: str
+    solver: str                  
+    build: object                 
+    shape_parameters: tuple = ()
+    axisymmetric: bool = True      
 
-def point_lensed_lal_binary_neutron_star(
-        frequency_array, mass_1, mass_2, luminosity_distance,
-        a_1, tilt_1, phi_12, a_2, tilt_2, phi_jl, theta_jn, phase,
-        MLz, y, **kwargs):
-    lookup_table = _pop_lensing_kwargs(kwargs)
-    w= POINT_LENS_W_CONSTANT * MLz *frequency_array
-    F = amplification_factor(w, y, lookup_table)
-    waveform_dict = _unlensed_waveform(
-        frequency_array, mass_1, mass_2, luminosity_distance,
-        a_1, tilt_1, phi_12, a_2, tilt_2, phi_jl, theta_jn, phase, kwargs)
-    return _apply_amplification(waveform_dict, F)
-     
- 
-def sis_lensed_lal_binary_black_hole(
-        frequency_array, mass_1, mass_2, luminosity_distance,
-        a_1, tilt_1, phi_12, a_2, tilt_2, phi_jl, theta_jn, phase,
-        MLz, y, **kwargs):
-    """SIS lens. Extra sampled parameters: sigma_v [km/s], Dl, Ds [kpc], y."""
-    # Adjust this import/call to match your gwlens.lens.sis API
-    #from gwlens.lens.sis import SIS
-    lookup_table = _pop_lensing_kwargs(kwargs)
-    #w = SIS.dimensionless_frequency(frequency_array, sigma_v=sigma_v,
-    #                               Dl=Dl, Ds=Ds)
-    w = POINT_LENS_W_CONSTANT* MLz * frequency_array
-    #print("Debug: w = ", w)
-    F = amplification_factor(w, y, lookup_table)
-    waveform_dict = _unlensed_waveform(
-        frequency_array, mass_1, mass_2, luminosity_distance,
-        a_1, tilt_1, phi_12, a_2, tilt_2, phi_jl, theta_jn, phase, kwargs)
-    return _apply_amplification(waveform_dict, F)
+    @property
+    def position_parameters(self):
+        return ("y",) if self.axisymmetric else ("y1", "y2")
 
-def sis_lensed_lal_binary_neutron_star(
-        frequency_array, mass_1, mass_2, luminosity_distance,
-        a_1, tilt_1, phi_12, a_2, tilt_2, phi_jl, theta_jn, phase,
-        MLz, y, **kwargs):
-    lookup_table = _pop_lensing_kwargs(kwargs)
-    w= POINT_LENS_W_CONSTANT * MLz *frequency_array
-    F = amplification_factor(w, y, lookup_table)
-    waveform_dict = _unlensed_waveform(
-        frequency_array, mass_1, mass_2, luminosity_distance,
-        a_1, tilt_1, phi_12, a_2, tilt_2, phi_jl, theta_jn, phase, kwargs)
-    return _apply_amplification(waveform_dict, F)
- 
- 
-# Registry: ini-file value of `lens-model`  ->  dotted path of the source model.
-# bilby_pipe stores the source model as a string, so we register dotted paths.
+    @property
+    def parameters(self):
+        return ("MLz",) + self.position_parameters + tuple(self.shape_parameters)
+
+    def with_solver(self, solver):
+        if solver is None or solver == self.solver:
+            return self
+        if solver == "2d" and self.axisymmetric:
+            return replace(self, solver="2d")
+        raise ValueError(f"lens model '{self.name}' is not axisymmetric: it needs the 2d solver")
+
+    def position(self, params):
+        """Source position as the solver expects it."""
+        if not self.axisymmetric:
+            return (float(params["y1"]), float(params["y2"]))
+        y = abs(float(params["y"]))
+        return y if self.solver == "1d" else (y, 0.0)
+
+    def solver_box(self, ranges):
+        """Source region for the solver from {parameter: [lo, hi]}."""
+        if not self.axisymmetric:
+            return tuple((float(ranges[p][0]), float(ranges[p][1])) for p in ("y1", "y2"))
+        lo, hi = float(ranges["y"][0]), float(ranges["y"][1])
+        return (lo, hi) if self.solver == "1d" else ((lo, hi), (0.0, 0.0))
+
+    def make_lens(self, params):
+        return self.build(_solver_module(self.solver), *[float(params[k]) for k in self.shape_parameters])
+
+
+def _binary_point(m, lens_q, lens_separation):
+    m1, m2 = 1.0 / (1.0 + lens_q), lens_q / (1.0 + lens_q)
+    return m.point_mass(m1, (-m2 * lens_separation, 0.0)) + m.point_mass(m2, (m1 * lens_separation, 0.0))
+
+
 LENS_MODELS = {
-    ("point", "lal_binary_black_hole"):   "gwlens.pe.waveform.point_lensed_lal_binary_black_hole",
-    ("point", "lal_binary_neutron_star"): "gwlens.pe.waveform.point_lensed_lal_binary_neutron_star",
-    ("sis",   "lal_binary_black_hole"):   "gwlens.pe.waveform.sis_lensed_lal_binary_black_hole",
-    ("sis",   "lal_binary_neutron_star"): "gwlens.pe.waveform.sis_lensed_lal_binary_neutron_star",
-}
-
-BASE_MODELS = ("lal_binary_black_hole", "lal_binary_neutron_star")
-# Lens parameters each model expects in the prior file (used for validation)
-LENS_MODEL_PARAMETERS = {
-    "point": ["MLz", "y"],
-    "sis": ["MLz", "y"],
+    "point": LensModel("point", "1d", lambda m: m.point_mass(1.0)),
+    "sis": LensModel("sis", "1d", lambda m: m.sis(1.0)),
+    "cis": LensModel("cis", "1d", lambda m, rc: m.cis(1.0, rc), ("rc",)),
+    "nfw": LensModel("nfw", "1d", lambda m, kappa_s: m.nfw(1.0, 4.0 * kappa_s), ("kappa_s",)),
+    "binary_point": LensModel("binary_point", "2d", _binary_point, ("lens_q", "lens_separation"), False),
+    "point_shear": LensModel("point_shear", "2d",
+                             lambda m, gamma_ext: m.point_mass(1.0) + m.external_shear(gamma_ext, 0.0),
+                             ("gamma_ext",), False),
 }
 
 
-"""
-def SIS_DimensionlessFrequency(f,sigma_v,Dl,Ds):
-
-    Dl = Dl* (u.kpc)
-    Ds = Ds * (u.kpc)
-    Dls= Ds-Dl
+def get_lens_model(lens_model, solver=None):
+    """
+    LensModel for a built-in name, a dotted path to a lens function, a lens function, or a
+    LensModel, computed with ``solver`` ("1d", "2d", or None/"auto" for the model's own).
     
-    Deff = (Dl*Ds/Dls).to(u.km)
+    """
+    solver = None if solver in (None, "", "None", "auto") else str(solver).lower()
+    if solver not in (None, "1d", "2d"):
+        raise ValueError(f"lens solver must be '1d', '2d' or 'auto', not {solver!r}")
+    if isinstance(lens_model, LensModel):
+        return lens_model.with_solver(solver)
+    if callable(lens_model):
+        build, name = lens_model, f"{lens_model.__module__}.{lens_model.__qualname__}"
+    else:
+        name = str(lens_model).strip()
+        if name.lower() in LENS_MODELS:
+            return LENS_MODELS[name.lower()].with_solver(solver)
+        if "." not in name:
+            raise ValueError(f"Unknown lens model '{name}'. Built in: {', '.join(LENS_MODELS)}, "
+                             "or give the dotted path of your lens function")
+        module, attr = name.rsplit(".", 1)
+        build = getattr(importlib.import_module(module), attr)
+    if solver is None:
+        raise ValueError(f"lens model '{name}': give the solver type (lens_solver = '1d' or '2d')")
+    shape = tuple(list(inspect.signature(build).parameters)[1:])
+    return LensModel(name, solver, build, shape, axisymmetric=(solver == "1d"))
 
-    sigma_v = sigma_v* (u.km/u.s)
 
-    c = 3e+5 * (u.km/u.s) # in km/s  
-    f = f*(1/u.s)
 
-    w  = 32* 3.14**3  * sigma_v**4 *Deff * f/(c**5)
-    return w.value
+def _coerce(value):
+    """Undo bilby_pipe's string conversion of waveform-arguments-dict values."""
+    if isinstance(value, dict):
+        return {k: _coerce(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_coerce(v) for v in value]
+    if isinstance(value, str):
+        s = value.strip().strip("'\"")
+        if s.lower() in ("none", ""):
+            return None
+        if s.lower() in ("true", "false"):
+            return s.lower() == "true"
+        try:
+            return float(s)
+        except ValueError:
+            return s
+    return value
 
-#load the interpolation file
 
-file = "/work/sreekanth/codes/globular_cluster/ampfac/sis/outdir/interpolation/result_sis1.hdf5"
-with h5py.File(file, 'r') as file:
-    w_values = file['w_values'][:]
-    y_values = file['y_values'][:]
-    data = file['results'][:]  # (len(w), len(y), 2)
+@dataclass
+class LensingSettings:
+    lens_model: object = None
+    solver: str = None
+    use_lookup_table: bool = False
+    lookup_table: str = None
+    ranges: dict = None
 
-real_data = data[:, :, 0]
-imag_data = data[:, :, 1]
 
-real_spline = RectBivariateSpline(w_values,y_values, real_data, kx=3, ky=3)
-imag_spline = RectBivariateSpline(w_values, y_values, imag_data, kx=3, ky=3)
-""" 
+def pop_lensing_settings(kwargs):
+    """
+    Remove the lens_* entries from a waveform-arguments dict and return them as settings.
+    """
+    raw = _coerce({k: kwargs.pop(k) for k in list(kwargs) if k.startswith("lens_")})
+    return LensingSettings(raw.get("lens_model"), raw.get("lens_solver"),
+                           bool(raw.get("lens_use_lookup_table") or False), raw.get("lens_lookup_table"),
+                           raw.get("lens_ranges"))
 
-"""
-def lensed_lal_binary_black_hole(frequency_array, mass_1, mass_2, luminosity_distance, a_1,tilt_1,
-                                 phi_12,a_2,tilt_2,phi_jl,theta_jn,phase,MLz,y,**kwargs):
-    
-    ws = constant*MLz*frequency_array
-    #F_interpolate = kwargs['F_amp']
-    F = real_spline(ws,y)[:,0] + 1j*imag_spline(ws,y)[:,0]
-    
 
-    waveform_kwargs = dict(
-        waveform_approximant='IMRPhenomXAS', reference_frequency=50.0,
-        minimum_frequency=20.0, maximum_frequency=frequency_array[-1],
-        catch_waveform_errors=False, pn_spin_order=-1, pn_tidal_order=-1,
-        pn_phase_order=-1, pn_amplitude_order=0)
-    waveform_kwargs.update(kwargs)
-    waveform_dict = lal_binary_black_hole(
-        frequency_array=frequency_array, mass_1=mass_1, mass_2=mass_2,
-        luminosity_distance=luminosity_distance, theta_jn=theta_jn, phase=phase,
-        a_1=a_1, a_2=a_2, tilt_1=tilt_1, tilt_2=tilt_2, phi_12=phi_12,
-        phi_jl=phi_jl, **waveform_kwargs)
-    waveform_dict["plus"] *= F
-    waveform_dict["cross"] *= F
-    return waveform_dict
 
-def sis_lensed_lal_binary_black_hole(frequency_array, mass_1, mass_2, luminosity_distance, a_1,tilt_1,
-                                 phi_12,a_2,tilt_2,phi_jl,theta_jn,phase,sigma_v,Dl,Ds,y,**kwargs):
-    
-    ws = SIS_DimensionlessFrequency(frequency_array,sigma_v,Dl,Ds)
-    #F_interpolate = kwargs['F_amp']
-    F = real_spline(ws,y)[:,0] + 1j*imag_spline(ws,y)[:,0]
-    
+_SOLVERS = OrderedDict()
+_WARNED = set()
 
-    waveform_kwargs = dict(
-        waveform_approximant='IMRPhenomXAS', reference_frequency=50.0,
-        minimum_frequency=20.0, maximum_frequency=frequency_array[-1],
-        catch_waveform_errors=False, pn_spin_order=-1, pn_tidal_order=-1,
-        pn_phase_order=-1, pn_amplitude_order=0)
-    waveform_kwargs.update(kwargs)
-    waveform_dict = lal_binary_black_hole(
-        frequency_array=frequency_array, mass_1=mass_1, mass_2=mass_2,
-        luminosity_distance=luminosity_distance, theta_jn=theta_jn, phase=phase,
-        a_1=a_1, a_2=a_2, tilt_1=tilt_1, tilt_2=tilt_2, phi_12=phi_12,
-        phi_jl=phi_jl, **waveform_kwargs)
-    waveform_dict["plus"] *= F
-    waveform_dict["cross"] *= F
-    return waveform_dict
-"""
-''' 
-def lensed_lal_binary_neutron_star(frequency_array, mass_1, mass_2, luminosity_distance, a_1,tilt_1,
-                                 phi_12,a_2,tilt_2,phi_jl,theta_jn,phase,MLz,y,**kwargs):
-    
-    ws = constant*MLz*frequency_array
-    #F_interpolate = kwargs['F_amp']
-    F = real_spline(ws,y)[:,0] + 1j*imag_spline(ws,y)[:,0]
-    
 
-    waveform_kwargs = dict(
-        waveform_approximant='IMRPhenomXAS', reference_frequency=50.0,
-        minimum_frequency=20.0, maximum_frequency=frequency_array[-1],
-        catch_waveform_errors=False, pn_spin_order=-1, pn_tidal_order=-1,
-        pn_phase_order=-1, pn_amplitude_order=0)
-    waveform_kwargs.update(kwargs)
-    waveform_dict = lal_binary_black_hole(
-        frequency_array=frequency_array, mass_1=mass_1, mass_2=mass_2,
-        luminosity_distance=luminosity_distance, theta_jn=theta_jn, phase=phase,
-        a_1=a_1, a_2=a_2, tilt_1=tilt_1, tilt_2=tilt_2, phi_12=phi_12,
-        phi_jl=phi_jl, **waveform_kwargs)
-    waveform_dict["plus"] *= F
-    waveform_dict["cross"] *= F
-    return waveform_dict
-'''
+def get_solver(model, params, w_range, box):
+    """Solver for one lens (fixed shape parameters), frequencies w_range and source region box;
+    cached per process (the last 8)."""
+    shape = tuple(float(params[k]) for k in model.shape_parameters)
+    key = (model.name, model.solver, shape, tuple(np.round(w_range, 12)), repr(box))
+    if key in _SOLVERS:
+        _SOLVERS.move_to_end(key)
+        return _SOLVERS[key]
+    m = _solver_module(model.solver)
+    lens = model.make_lens(params)
+    kw = dict(m.PE_SETTINGS, n_workers=1, interpolate="auto", interp_tol=1e-6)
+    w_lo, w_hi = max(w_range[0], 1e-9 * w_range[1]), w_range[1]
+    if model.solver == "1d":
+        lo, hi = box
+        s = m.Solver1D(lens, y=0.5 * (lo + hi), wmin=w_lo, wmax=w_hi, y_radius=0.5 * (hi - lo) + 1e-12, **kw)
+    else:
+        (a1, b1), (a2, b2) = box
+        s = m.Solver2D(lens, (0.5 * (a1 + b1), 0.5 * (a2 + b2)), w_lo, w_hi,
+                       y_radius=0.5 * np.hypot(b1 - a1, b2 - a2) + 1e-12, map_ext=1.0, **kw)
+    _SOLVERS[key] = s
+    if len(_SOLVERS) > 8:
+        _SOLVERS.popitem(last=False)[1].close()
+    return s
+
+
+def _inside(pos, box):
+    p, b = np.atleast_1d(pos), np.atleast_2d(box)
+    return bool(np.all((p >= b[:, 0] - 1e-9) & (p <= b[:, 1] + 1e-9)))
+
+
+def _from_solver(model, w, params, ranges):
+    pos = model.position(params)
+    w_range = (float(w.min()), float(w.max()))
+    box = None
+    if ranges:
+        W0, W1 = ranges["w"]
+        if W0 * (1 - 1e-9) <= w_range[0] and w_range[1] <= W1 * (1 + 1e-9):
+            w_range = (W0, W1)
+        box = model.solver_box(ranges)
+    if box is None or not _inside(pos, box):
+        if ranges and "range" not in _WARNED:
+            _WARNED.add("range")
+            logger.warning(f"GWLENS: source position {pos} outside lens_ranges: extra solver built")
+        box = (pos, pos) if model.solver == "1d" else ((pos[0], pos[0]), (pos[1], pos[1]))
+    return np.conj(get_solver(model, params, w_range, box).spectrum(w, pos))
+
+
+
+def _bspline_basis(t, k, x):
+    """First non-zero B-spline index at x and the k+1 non-zero values (Cox-de Boor)."""
+    n = t.size - k - 1
+    m = min(max(int(np.searchsorted(t, x, side="right")) - 1, k), n - 1)
+    N, left, right = np.zeros(k + 1), np.zeros(k + 1), np.zeros(k + 1)
+    N[0] = 1.0
+    for j in range(1, k + 1):
+        left[j], right[j] = x - t[m + 1 - j], t[m + j] - x
+        saved = 0.0
+        for r in range(j):
+            tmp = N[r] / (right[r + 1] + left[j - r])
+            N[r] = saved + right[r + 1] * tmp
+            saved = left[j - r] * tmp
+        N[j] = saved
+    return m - k, N
+
+
+class LookupTable:
+    """
+    F (LAL convention) on a grid (w, y) or (w, y1, y2), cubic spline in every axis.
+
+    HDF5 file: w_values, y_values (or y1_values, y2_values), results (n_w, n_y, [n_y2,] 2) with real
+    and imaginary parts; attributes 'axes' (default ["w", "y"]), 'lens_model', and the fixed shape
+    parameters of the lens.
+    """
+
+    def __init__(self, axes, coords, values, attrs=None, path=None):
+        self.axes, self.attrs, self.path = list(axes), dict(attrs or {}), path
+        self.coords = [np.asarray(x, dtype=float) for x in coords]
+        C = np.asarray(values, dtype=complex)
+        self.knots, self.degrees = [], []
+        for j, x in enumerate(self.coords):
+            if x.size == 1:
+                self.knots.append(None)
+                self.degrees.append(0)
+                continue
+            spl = make_interp_spline(x, np.moveaxis(C, j, 0), k=min(3, x.size - 1), axis=0)
+            C = np.moveaxis(spl.c, 0, j)
+            self.knots.append(spl.t)
+            self.degrees.append(spl.k)
+        self.C = np.ascontiguousarray(C)
+
+    @classmethod
+    def load(cls, path):
+        import h5py
+        import json
+        with h5py.File(path, "r") as f:
+            attrs = {k: (v.decode() if isinstance(v, bytes) else v) for k, v in f.attrs.items()}
+            axes = json.loads(attrs["axes"]) if "axes" in attrs else ["w", "y"]
+            coords = [f[f"{a}_values"][:] for a in axes]
+            data = f["results"][:]
+        return cls(axes, coords, data[..., 0] + 1j * data[..., 1], attrs, path)
+
+    def _clip(self, j, v):
+        lo, hi = self.coords[j][0], self.coords[j][-1]
+        if (np.any(v < lo * (1 - 1e-9)) or np.any(v > hi * (1 + 1e-9))) and (self.path, j) not in _WARNED:
+            _WARNED.add((self.path, j))
+            logger.warning(f"GWLENS: {self.axes[j]} outside the lookup table [{lo:.4g}, {hi:.4g}]; clipped")
+        return np.clip(v, lo, hi)
+
+    def __call__(self, w, params):
+        idx, weights = [slice(None)], []
+        for j in range(1, len(self.axes)):
+            if self.degrees[j] == 0:
+                idx.append(slice(0, 1))
+                weights.append(np.ones(1))
+                continue
+            i0, b = _bspline_basis(self.knots[j], self.degrees[j], float(self._clip(j, params[self.axes[j]])))
+            idx.append(slice(i0, i0 + self.degrees[j] + 1))
+            weights.append(b)
+        sub = self.C[tuple(idx)]
+        for b in reversed(weights):
+            sub = sub @ b
+        if self.degrees[0] == 0:
+            return np.full(np.shape(w), sub[0], dtype=complex)
+        return BSpline(self.knots[0], sub, self.degrees[0], extrapolate=False)(self._clip(0, np.asarray(w)))
+
+
+@lru_cache(maxsize=4)
+def load_lookup_table(path):
+    return LookupTable.load(path)
+
+
+def _from_table(model, w, params, path):
+    table = load_lookup_table(path)
+    for name in model.shape_parameters:
+        if name in table.attrs and abs(float(table.attrs[name]) - float(params[name])) > 1e-6:
+            raise ValueError(f"lookup table {path} was made for {name} = {table.attrs[name]}, not {params[name]}")
+    p = dict(params)
+    if model.axisymmetric:
+        p["y"] = abs(float(p["y"]))
+    return table(w, p)
+
+
+
+def amplification(frequency_array, lens_model, parameters, use_lookup_table=False, lookup_table=None,
+                  ranges=None, solver=None, minimum_frequency=None, maximum_frequency=None):
+    """
+    F(f) in the LAL convention (the waveform is multiplied by it); F = 1 outside
+    [minimum_frequency, maximum_frequency] (where LAL sets the waveform to zero anyway).
+    """
+    model = get_lens_model(lens_model, solver)
+    f = np.asarray(frequency_array, dtype=float)
+    F = np.ones(f.shape, dtype=complex)
+    band = f > 0
+    if minimum_frequency is not None:
+        band &= f >= float(minimum_frequency)
+    if maximum_frequency is not None:
+        band &= f <= float(maximum_frequency)
+    if not np.any(band):
+        return F
+    w = POINT_LENS_W_CONSTANT * float(parameters["MLz"]) * f[band]
+    if use_lookup_table:
+        F[band] = _from_table(model, w, parameters, lookup_table)
+    else:
+        F[band] = _from_solver(model, w, parameters, ranges)
+    return F
+
+
+def _base_function(base_model):
+    """Unlensed source model from a function, a bilby.gw.source name or a dotted path."""
+    if callable(base_model):
+        return base_model
+    import bilby
+    name = str(base_model)
+    fn = getattr(bilby.gw.source, name.replace("bilby.gw.source.", ""), None)
+    if fn is None:
+        module, attr = name.rsplit(".", 1)
+        fn = getattr(importlib.import_module(module), attr)
+    return fn
+
+
+def lensed_source_model(model, base, settings):
+    """bilby source function: base(frequency_array, ...) * F, with the lens parameters appended to the
+    signature (bilby passes only the parameters that appear in it)."""
+    P = inspect.Parameter
+    base_params = [p.name for p in list(inspect.signature(base).parameters.values())[1:]
+                   if p.kind in (P.POSITIONAL_OR_KEYWORD, P.KEYWORD_ONLY)]
+    names = ["frequency_array"] + base_params + list(model.parameters)
+    sig = inspect.Signature([P(n, P.POSITIONAL_OR_KEYWORD) for n in names] + [P("kwargs", P.VAR_KEYWORD)])
+
+    def source_model(*args, **kwargs):
+        bound = sig.bind(*args, **kwargs).arguments
+        extra = {k: v for k, v in bound.pop("kwargs", {}).items() if not k.startswith("lens_")}
+        f = bound.pop("frequency_array")
+        lens_params = {k: bound.pop(k) for k in model.parameters}
+        waveform_kwargs = dict(DEFAULT_WAVEFORM_KWARGS, maximum_frequency=f[-1])
+        waveform_kwargs.update(extra)
+        pol = base(f, **bound, **waveform_kwargs)
+        if pol is None:
+            return None
+        F = amplification(f, model, lens_params, settings.use_lookup_table, settings.lookup_table,
+                          settings.ranges, None, waveform_kwargs.get("minimum_frequency"),
+                          waveform_kwargs.get("maximum_frequency"))
+        return {key: value * F for key, value in pol.items()}
+
+    source_model.__signature__ = sig
+    source_model.__name__ = source_model.__qualname__ = f"{model.name}_lensed_{base.__name__}"
+    source_model.__module__ = __name__
+    return source_model
+
+
+class LensedWaveformGenerator(WaveformGenerator):
+    """
+    bilby WaveformGenerator for any unlensed frequency-domain source model times F (see module doc).
+
+    lens_model        built-in name, dotted path to a lens function, or the function
+    lens_solver       "1d", "2d" or None (the model's own)
+    use_lookup_table  True: interpolate lookup_table; False: compute F with the solver
+    priors / ranges   region of the lens parameters ({parameter: [lo, hi], "w": [lo, hi]}); the solver is
+                      built once for it. Without it, a solver is built for each new source position.
+    Each can also be given in waveform_arguments with a lens_ prefix (as gwlens_pipe does).
+    """
+    LAL_SIM_INSPIRAL_SPINS_FLOW = 1
+
+    def __init__(self, duration=None, sampling_frequency=None, start_time=0, frequency_domain_source_model=None,
+                 time_domain_source_model=None, parameters=None, parameter_conversion=None,
+                 waveform_arguments=None, lens_model=None, lens_solver=None, use_lookup_table=None,
+                 lookup_table=None, priors=None, ranges=None):
+        wfa = dict(waveform_arguments or {})
+        s = pop_lensing_settings(wfa)
+        s.lens_model = lens_model if lens_model is not None else s.lens_model
+        s.solver = lens_solver if lens_solver is not None else s.solver
+        s.use_lookup_table = bool(use_lookup_table) if use_lookup_table is not None else s.use_lookup_table
+        s.lookup_table = lookup_table if lookup_table is not None else s.lookup_table
+        if s.lens_model is None:
+            raise ValueError("LensedWaveformGenerator needs lens_model")
+        if s.use_lookup_table and not s.lookup_table:
+            raise ValueError("use_lookup_table=True needs lookup_table")
+        self.lens_model = get_lens_model(s.lens_model, s.solver)
+        if priors is not None or ranges is not None:
+            from .utils import lens_parameter_ranges
+            f_hi = wfa.get("maximum_frequency") or (sampling_frequency / 2 if sampling_frequency else None)
+            band = (float(wfa.get("minimum_frequency", 20.0)), float(f_hi)) if f_hi else None
+            s.ranges = lens_parameter_ranges(self.lens_model, priors=priors, frequency_band=band, overrides=ranges)
+        self.lensing = s
+        self._base = _base_function(frequency_domain_source_model or "lal_binary_black_hole")
+        if parameter_conversion is None and "black_hole" in self._base.__name__:
+            from bilby.gw.conversion import convert_to_lal_binary_black_hole_parameters as parameter_conversion
+        elif parameter_conversion is None and "neutron_star" in self._base.__name__:
+            from bilby.gw.conversion import convert_to_lal_binary_neutron_star_parameters as parameter_conversion
+        super().__init__(duration=duration, sampling_frequency=sampling_frequency, start_time=start_time,
+                         frequency_domain_source_model=lensed_source_model(self.lens_model, self._base, s),
+                         parameters=parameters, parameter_conversion=parameter_conversion, waveform_arguments=wfa)
+        if self._base.__name__.startswith("lal_") and "waveform_approximant" in wfa and "reference_frequency" in wfa:
+            from bilby.gw.waveform_generator import LALCBCWaveformGenerator
+            LALCBCWaveformGenerator.validate_reference_frequency(self)
+
+    def __getstate__(self):               
+        state = self.__dict__.copy()
+        m = self.lens_model
+        state["lens_model"] = (m.name if m.name in LENS_MODELS or "." in m.name else m.build, m.solver)
+        state["frequency_domain_source_model"] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.lens_model = get_lens_model(*state["lens_model"])
+        self.frequency_domain_source_model = lensed_source_model(self.lens_model, self._base, self.lensing)
+
+    def __repr__(self):
+        mode = f"lookup_table={self.lensing.lookup_table}" if self.lensing.use_lookup_table else "solver"
+        return (super().__repr__()[:-1] + f", lens_model={self.lens_model.name}, "
+                f"lens_solver={self.lens_model.solver}, {mode})")

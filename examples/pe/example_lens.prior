@@ -1,0 +1,34 @@
+
+chirp_mass = bilby.gw.prior.UniformInComponentsChirpMass(name='chirp_mass', minimum=20, maximum=40, unit='$M_{\odot}$')
+mass_ratio = bilby.gw.prior.UniformInComponentsMassRatio(name='mass_ratio', minimum=0.125, maximum=1)
+mass_1 = Constraint(name='mass_1', minimum=5, maximum=100)
+mass_2 = Constraint(name='mass_2', minimum=5, maximum=100)
+a_1 = Uniform(name='a_1', minimum=0, maximum=0.99)
+a_2 = Uniform(name='a_2', minimum=0, maximum=0.99)
+tilt_1 = Sine(name='tilt_1')
+tilt_2 = Sine(name='tilt_2')
+phi_12 = Uniform(name='phi_12', minimum=0, maximum=2 * np.pi, boundary='periodic')
+phi_jl = Uniform(name='phi_jl', minimum=0, maximum=2 * np.pi, boundary='periodic')
+luminosity_distance = bilby.gw.prior.UniformSourceFrame(name='luminosity_distance', minimum=100, maximum=3000, unit='Mpc')
+dec = Cosine(name='dec')
+ra = Uniform(name='ra', minimum=0, maximum=2 * np.pi, boundary='periodic')
+theta_jn = Sine(name='theta_jn')
+psi = Uniform(name='psi', minimum=0, maximum=np.pi, boundary='periodic')
+phase = Uniform(name='phase', minimum=0, maximum=2 * np.pi, boundary='periodic')
+
+#  lens (lens-model = point or sis)
+# MLz: redshifted lens mass [Msun]; y: source position in units of the Einstein radius.
+# The ranges set the region the solver / lookup table covers: w up to 8 pi G MLz_max f_max / c^3.
+MLz = LogUniform(name='MLz', minimum=10, maximum=1000, latex_label='$M_{Lz}$', unit='$M_{\odot}$')
+y = PowerLaw(name='y', alpha=1, minimum=0.05, maximum=3, latex_label='$y$')
+
+# ther lens models: add their parameters
+# cis:          rc = 0.1                      
+# nfw:          kappa_s = Uniform(name='kappa_s', minimum=0.5, maximum=2)
+# binary_point: replace y by y1, y2 and add lens_q, lens_separation:
+#   y1 = Uniform(name='y1', minimum=-1, maximum=1)
+#   y2 = Uniform(name='y2', minimum=-1, maximum=1)
+#   lens_q = 0.5
+#   lens_separation = 0.8
+# point_shear:  y1, y2 as above, and gamma_ext = Uniform(name='gamma_ext', minimum=0, maximum=0.3)
+

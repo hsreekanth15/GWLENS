@@ -66,6 +66,18 @@ earth_ephem= #path/to/earth-sunfile.dat
 #*****************************************#
 [Inference] 
 #*****************************************#
+lens-model = 
+lens-solver =
+use-lookup-table =
+lensed-lookup-generation = False
+lens-lookup-tolerance = 
+lens-lookup-npool =
+lens-lookup-kwargs  =
+lens-parameter-ranges =
+lens-solver-kwargs  = 
+lens-table-convention  = lal
+
+
 recovery_lensmodel = point
 recovery_lens_table = #path/to/lens/table.hdf5
 injection_lensmodel = point
@@ -119,16 +131,7 @@ cis_coreradius_gridspace = linear
 """
     with open(output_file, "w") as f:
         f.write(content)
-    print(f"✅ INI file written to: {output_file}")
+    print(f"INI file written to: {output_file}")
 
 
 
-def main():
-    #Argument parser for CLI. Writes ini in the custom file name.
-    import argparse
-    parser = argparse.ArgumentParser(description="Generate default parameters.ini")
-
-    parser.add_argument("--output", default="parameters.ini", help="Output INI file name")
-
-    args = parser.parse_args()
-    write_parameters_ini(output_file=args.output)
