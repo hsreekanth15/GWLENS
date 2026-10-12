@@ -1,3 +1,1 @@
-## Rotated Tail Method
-
-
+# Rotated Tail Method

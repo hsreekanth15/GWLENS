@@ -1,5 +1,4 @@
-
-## Solver 2D
+# Solver 2D
 
 ```{eval-rst}
 .. autoclass:: gwlens.solver2d.Solver2D
@@ -16,4 +15,3 @@
    :special-members:
    :show-inheritance:
 ```
-

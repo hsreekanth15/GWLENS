@@ -1,0 +1,22 @@
+/* GitHub icon at the right edge of the blue sidebar panel, level with the project title */
+.wy-side-nav-search {
+    position: relative;
+}
+.wy-side-nav-search > a.sidebar-github-link,
+.wy-side-nav-search > a.sidebar-github-link:visited {
+    position: absolute;
+    top: 13px;
+    right: 0.6em;
+    padding: 0;
+    margin: 0;
+    color: #fcfcfc;
+    font-size: 24px;
+    line-height: 25px;
+}
+.wy-side-nav-search > a.sidebar-github-link:hover {
+    color: #fcfcfc;
+    opacity: 0.8;
+}
+.wy-side-nav-search > a.sidebar-github-link .fa-github {
+    font-size: inherit;
+}

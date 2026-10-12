@@ -1,4 +1,3 @@
-
 # Solver 1D
 
 ```{eval-rst}
