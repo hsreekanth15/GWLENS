@@ -95,13 +95,26 @@ LENS_MODELS = {
 
 def get_lens_model(lens_model, solver=None):
     """
-    LensModel for a built-in name, a dotted path to a lens function, a lens function, or a
+    LensModel for a built-in name, path to a lens function, a lens function, or a
     LensModel, computed with ``solver`` ("1d", "2d", or None/"auto" for the model's own).
+
+    Parameters:
+    -----------
+
+    lens_model : Callable
+
+    solver : str
+
+    Returns:
+    ---------
+    Returns lens model class
     
     """
     solver = None if solver in (None, "", "None", "auto") else str(solver).lower()
+
     if solver not in (None, "1d", "2d"):
         raise ValueError(f"lens solver must be '1d', '2d' or 'auto', not {solver!r}")
+    
     if isinstance(lens_model, LensModel):
         return lens_model.with_solver(solver)
     if callable(lens_model):
@@ -393,15 +406,18 @@ class LensedWaveformGenerator(WaveformGenerator):
                  waveform_arguments=None, lens_model=None, lens_solver=None, use_lookup_table=None,
                  lookup_table=None, priors=None, ranges=None):
         wfa = dict(waveform_arguments or {})
+
         s = pop_lensing_settings(wfa)
         s.lens_model = lens_model if lens_model is not None else s.lens_model
         s.solver = lens_solver if lens_solver is not None else s.solver
         s.use_lookup_table = bool(use_lookup_table) if use_lookup_table is not None else s.use_lookup_table
         s.lookup_table = lookup_table if lookup_table is not None else s.lookup_table
+
         if s.lens_model is None:
             raise ValueError("LensedWaveformGenerator needs lens_model")
         if s.use_lookup_table and not s.lookup_table:
             raise ValueError("use_lookup_table=True needs lookup_table")
+        
         self.lens_model = get_lens_model(s.lens_model, s.solver)
         if priors is not None or ranges is not None:
             from .utils import lens_parameter_ranges

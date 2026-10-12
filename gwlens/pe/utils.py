@@ -1,18 +1,15 @@
-"""
-gwlens_pipe utilities: lens-parameter ranges from the prior and the injection, and lookup tables.
-"""
 import json
 import os
 import time
-
 import numpy as np
-
 from .waveform import LookupTable, _coerce, _solver_module, get_lens_model, logger
 
 
-# ================================================================== ini helpers
+
 def parse_dict_option(value):
-    """A dict-valued ini option (bilby_pipe keeps them as strings) as a dict."""
+    """
+    A dict-valued ini option (bilby_pipe keeps them as strings) as a dict.
+    """
     if value in (None, "", "None"):
         return {}
     if isinstance(value, dict):
@@ -38,7 +35,10 @@ def frequency_band(args):
 
 
 def read_prior_strings(args):
-    """{name: prior string} from prior-dict or prior-file (lines only: other priors are not built)."""
+    """
+    {name: prior string} from prior-dict or prior-file (lines only: other priors are not built).
+    
+    """
     if getattr(args, "prior_dict", None) not in (None, "", "None"):
         from bilby_pipe.utils import convert_prior_string_input
         return {k.replace("-", "_"): v for k, v in convert_prior_string_input(args.prior_dict).items()}
@@ -55,12 +55,16 @@ def read_prior_strings(args):
 
 
 def read_injection_values(args):
-    """Parameters of injection-dict (empty if not given)."""
+    """
+    Parameters of injection-dict (empty if not given).
+    """
     return parse_dict_option(getattr(args, "injection_dict", None))
 
 
 def prior_range(name, spec):
-    """(min, max) of a prior given as a number, a bilby Prior or a prior string."""
+    """
+    (min, max) of a prior given as a number, a bilby Prior or a prior string.
+    """
     import bilby
     if isinstance(spec, (int, float)):
         return float(spec), float(spec)
@@ -112,11 +116,45 @@ def _w_grid(w_lo, w_hi, dw):
 
 def generate_lookup_table(lens_model, ranges, path, n_workers=1, dw=0.05, dy=None, max_entries=5e7,
                           n_check=8):
-    """Compute F (LAL convention) on a grid covering ``ranges`` and write it to ``path``.
+    """
+    Compute the lens amplification factor F on a grid and save it to an HDF5 file.
 
-    Grid: w with steps of 10% up to dw, then dw; each source-position axis with step dy (default
-    min(0.01, 0.15 / w_max)). Shape parameters must be fixed (lo = hi in ranges). After the table is
-    built, it is compared with the solver at n_check random source positions (200 frequencies each).
+    The table is built on a grid over ``ranges``. The w axis uses 10% steps
+    below ``dw`` and steps of ``dw`` above it. Each source-position axis uses
+    steps of ``dy``. After the table is built, it is compared with the solver
+    at ``n_check`` random source positions, with 200 frequencies each.
+
+    Parameters
+    ----------
+    lens_model : str
+        Name of the lens model, as accepted by ``get_lens_model``.
+    ranges : dict of str to list of float
+        ``{parameter: [lo, hi]}``. Shape parameters must have ``lo == hi``.
+    path : str
+        Output file path. Parent directories are created if needed.
+    n_workers : int, default 1
+        Number of worker processes passed to the solver.
+    dw : float, default 0.05
+        Step size of the w grid above the 10% geometric region.
+    dy : float or None, default None
+        Step size of the source-position grid. If None, uses
+        ``min(0.01, 0.15 / w_max)``.
+    max_entries : float, default 5e7
+        Refuse to build a table with more entries than this.
+    n_check : int, default 8
+        Number of random positions used to check the table against the solver.
+
+    Returns
+    -------
+    str
+        Absolute path of the written file.
+
+    Raises
+    ------
+    ValueError
+        If a shape parameter varies in ``ranges``, or if the table would
+        exceed ``max_entries``.
+    
     """
     import h5py
     model = get_lens_model(lens_model)
@@ -127,17 +165,21 @@ def generate_lookup_table(lens_model, ranges, path, n_workers=1, dw=0.05, dy=Non
     fixed = {p: float(ranges[p][0]) for p in model.shape_parameters}
     w_hi = float(ranges["w"][1])
     w_lo = max(float(ranges["w"][0]), 1e-6 * w_hi)
+
     dy = dy or min(0.01, 0.15 / w_hi)
     ws = _w_grid(w_lo, w_hi, dw)
+
     axes = []
     for p in model.position_parameters:
         lo, hi = ranges[p]
         axes.append(np.linspace(lo, hi, max(4, int(np.ceil((hi - lo) / dy)) + 1)) if hi > lo else np.array([lo]))
     shape = (ws.size,) + tuple(a.size for a in axes)
+    
     if np.prod(shape) > max_entries:
         raise ValueError(f"GWLENS: lookup table of {shape} = {np.prod(shape):,} entries is too large "
                          f"(max_entries = {max_entries:,.0f}); use larger dw / dy in lens-lookup-kwargs, a "
                          "narrower prior, or use-lookup-table = False.")
+    
     logger.info(f"GWLENS: computing lookup table {dict(zip(['w', *model.position_parameters], shape))}")
     t0 = time.perf_counter()
 

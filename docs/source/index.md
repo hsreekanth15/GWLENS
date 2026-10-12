@@ -35,4 +35,5 @@ cw_microlensing
 :caption: API Reference
 solver1d
 solver2d
+parameter_estimation
 ```
