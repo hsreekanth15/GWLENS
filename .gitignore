@@ -1,9 +1,14 @@
-#python packaging artifacts
-
+# Python packaging artifacts
+__pycache__/
 *.pyc
 *.egg
-*.vscode/
 *.egg-info/
-dist/
-build/
 .eggs/
+dist/
+
+# Build output (package build/ and docs/build/)
+build/
+
+# Editor and OS files
+.vscode/
+.DS_Store

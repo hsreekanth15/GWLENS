@@ -6,24 +6,27 @@ build-backend = "setuptools.build_meta"
 name = "gwlens"
 version = "0.1.7"
 description = "Gravitational lensing CLI"
-dependencies = ["numpy",
-"scipy",
-"h5py",
-"finufft",
-"joblib",
-"astropy",
-"mpmath",
-"tqdm",
-"matplotlib",
-"bilby",
-"bilby_pipe",
-"sphinx",
-"myst-parser"]
+dependencies = [
+    "numpy",
+    "scipy",
+    "h5py",
+    "finufft",
+    "joblib",
+    "astropy",
+    "mpmath",
+    "tqdm",
+    "matplotlib",
+    "bilby",
+    "bilby_pipe",
+]
 
 [project.optional-dependencies]
 docs = [
-"sphinx",
-"myst-parser",]
+    "sphinx>=7",
+    "sphinx-rtd-theme>=2",
+    "myst-parser>=4",
+    "sphinx-autobuild>=2024.2.4",
+]
 
 [project.scripts]
 gwlens_interpolate = "gwlens.tools.interpolator:interpolate"

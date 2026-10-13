@@ -24,13 +24,10 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Install gwlens
-        run: pip install .
+      - name: Install gwlens with docs dependencies
+        run: pip install ".[docs]"
 
-      - name: Install dependencies
-        run: pip install -r docs/requirements.txt
-
-      - name: Build HTML
+      - name: Build docs
         working-directory: docs
         run: make html
 

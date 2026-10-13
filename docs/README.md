@@ -4,20 +4,23 @@ make html
 ```
 # GWLENS documentation
 
-Install the documentation dependencies and build the HTML:
+If you would like to contribute to the documentation, you can build it locally with edits. The documentation is built using [Sphinx](https://www.sphinx-doc.org/en/master/).
+
+To install the dependencies, you can use pip:
 
 ```bash
-pip install -r requirements.txt
+pip install ".[docs]"
+```
+
+Once the dependencies are installed, you can build the documentation with:
+
+```bash
 make html
 ```
 
-The output is in `build/html/`. 
+This will generate the HTML files in the `build/html/` directory. You can then open the `index.html` file in your web browser to view the documentation.
 
-To build and preview it live locally:
-
-```bash
-make live-html
-```
+If you would like to have a live preview of the documentation while you are editing it, you can use the `make live-html` command. This will start a local web server and automatically refresh the page whenever you make changes to the documentation files.
 
 It uses `sphinx-autobuild` to have the live preview. If the port is occupied, you can ask for different ports:
 
