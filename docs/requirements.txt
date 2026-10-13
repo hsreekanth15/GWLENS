@@ -1,0 +1,4 @@
+sphinx>=7
+sphinx-rtd-theme>=2
+sphinx-autobuild>=2024.2.4
+myst-parser>=4

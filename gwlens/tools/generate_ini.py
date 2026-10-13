@@ -133,5 +133,12 @@ cis_coreradius_gridspace = linear
         f.write(content)
     print(f"INI file written to: {output_file}")
 
+def main():
+    #Argument parser for CLI. Writes ini in the custom file name.
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate default parameters.ini")
 
+    parser.add_argument("--output", default="parameters.ini", help="Output INI file name")
 
+    args = parser.parse_args()
+    write_parameters_ini(output_file=args.output)
