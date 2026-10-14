@@ -1,4 +1,4 @@
-name: gh-pages
+name: docs-workflow
 
 on:
   push:
@@ -39,7 +39,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment:
-      name: gh-pages
+      name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
