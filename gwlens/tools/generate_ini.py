@@ -66,16 +66,17 @@ earth_ephem= #path/to/earth-sunfile.dat
 #*****************************************#
 [Inference] 
 #*****************************************#
-lens-model = 
-lens-solver =
-use-lookup-table =
-lensed-lookup-generation = False
-lens-lookup-tolerance = 
-lens-lookup-npool =
-lens-lookup-kwargs  =
-lens-parameter-ranges =
-lens-solver-kwargs  = 
-lens-table-convention  = lal
+lens-model = point                       # point, sis, cis, nfw, binary_point, point_shear, or mymodule.my_lens
+lens-solver = 1d                       # auto | 1d | 2d (Using auto will run 2d, more expensive )
+lensed-injection = True                  # inject with the lensed waveform
+lensed-recovery = True                   # recover with the lensed waveform
+use-lookup-table = False                 # True: interpolate lens-lookup-table (generated from the prior if missing)
+
+# lens-lookup-table = /path/to/table.hdf5
+# lensed-lookup-generation = True
+# lens-lookup-npool = 4
+# lens-lookup-kwargs = {dw: 0.05, dy: 0.002}
+
 
 
 recovery_lensmodel = point
