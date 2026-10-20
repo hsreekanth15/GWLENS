@@ -613,7 +613,7 @@ class Solver1D:
 
     def __init__(self, lens, y=0.0, wmin=1e-3, wmax=1e3, y_radius=0.0, cycles=8, ngl=32, nlag=30, n_cheb=14,
                  band_ratio=4.0, xb_min=0.0, nufft_eps=1e-14, z_small=1.0, n_workers=1, threads=None,
-                 interpolate=False, interp_tol=1e-10):
+                 interpolate=True, interp_tol=1e-10):
         """
         Initialize the 1D lensing solver.
 

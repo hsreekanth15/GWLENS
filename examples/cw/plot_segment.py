@@ -50,6 +50,8 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from gwlens.tools import plotting
+plotting.apply_figure_style()
 
 try:
     from gwlens.tdfstat import datagen as dg
@@ -217,9 +219,9 @@ def main(argv=None):
                    UNLENSED_COLOR, 3))
 
     title = (f"Segment {segment_name}, {detector_name}, band {band} "
-             f"(fpo = {fpo:.4f} Hz), GPS {gps_time:.0f}")
+            )
     if F is not None:
-        title += (f"\n|F| = {np.abs(F[sl]).mean():.4f}, "
+        title += (f"\n$|F|$ = {np.abs(F[sl]).mean():.4f}, "
                   f"arg F = {np.degrees(np.angle(F[sl].mean())):.2f} deg")
 
     # ---- plot ---------------------------------------------------------------
@@ -235,12 +237,12 @@ def main(argv=None):
         axes[-1].set_xlabel("time into the segment [s]")
         fig.supylabel("strain / einstein_factor", fontsize=9)
     else:
-        fig, ax = plt.subplots(figsize=(11, 5.5))
+        fig, ax = plt.subplots(figsize=(15, 5))
         for y, scale, label, color, z in curves:
             lw = 1.6 if color is UNLENSED_COLOR else (0.8 if color is NOISE_COLOR else 1.4)
             ax.plot(t, scale * y[sl], color=color, lw=lw, label=label, zorder=z)
-        ax.set_xlabel("time into the segment [s]")
-        ax.set_ylabel("strain / einstein_factor")
+        ax.set_xlabel("Time into the segment [s]")
+        ax.set_ylabel("strain /$10^{-20}$")
         ax.set_title(title, fontsize=10)
         ax.legend(loc="upper right", fontsize=9, framealpha=0.9)
         ax.grid(alpha=0.3)
@@ -257,7 +259,7 @@ def main(argv=None):
         print(f"  {label.split('  (')[0]:<16} rms {rms:.4e}"
               + (f"   drawn at rms {scale * rms:.4e}" if scale != 1.0 else ""))
     if F is not None:
-        print(f"  |F| in this window  [{np.abs(F[sl]).min():.4f}, "
+        print(f"  $|F|$ in this window  [{np.abs(F[sl]).min():.4f}, "
               f"{np.abs(F[sl]).max():.4f}]")
     if noise is not None:
         sig = np.std(unlensed_signal[sl])
