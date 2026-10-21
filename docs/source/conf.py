@@ -53,6 +53,8 @@ html_theme_options = {
     "titles_only": False,
     "display_version": True,
 }
+html_css_files = ['custom.css']
+html_js_files = ['custom.js', 'page-toc.js']
 
 # "Edit on GitHub" link at the top of every page
 html_context = {
