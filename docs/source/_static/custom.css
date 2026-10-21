@@ -1,4 +1,87 @@
-/* GitHub icon at the right edge of the blue sidebar panel, level with the project title */
+/* =====================================================================
+   FONTS
+   EB Garamond: landing title, tagline, h2-h4.  JetBrains Mono: code.
+   ===================================================================== */
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/JetBrainsMono/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+/* UNUSED (nothing requests weight 500 in mono yet)
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/JetBrainsMono/JetBrainsMono-Medium.woff2") format("woff2");
+  font-weight: 500; font-style: normal; font-display: swap;
+}
+*/
+@font-face {
+  font-family: "EB Garamond";
+  src: url("fonts/EBGaramond/EBGaramond-Medium.woff2") format("woff2");
+  font-weight: 500; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "EB Garamond";
+  src: url("fonts/EBGaramond/EBGaramond-Bold.woff2") format("woff2");
+  font-weight: 600; font-style: normal; font-display: swap;
+}
+
+/* code font */
+.rst-content code,
+.rst-content pre,
+.rst-content .literal,
+.rst-content .highlight pre,
+div.nbinput .input_area pre,
+div.nboutput .output_area pre {
+  font-family: "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+}
+.rst-content code,
+.rst-content .literal { font-size: 0.85em; }
+.rst-content .highlight pre,
+div.nbinput .input_area pre { font-size: 0.85rem; line-height: 1.5; }
+
+/* REDUNDANT (the full title rule below sets the same font-family)
+.rst-content section#gwlens > h1,
+.rst-content div#gwlens > h1 { font-family: "EB Garamond", Georgia, serif; }
+.gw-tagline { font-family: "EB Garamond", Georgia, serif; }
+*/
+
+/* headings in EB Garamond */
+.rst-content h2,
+.rst-content h3,
+.rst-content h4 {
+  font-family: "EB Garamond", Georgia, serif;
+  font-weight: 600;
+}
+.rst-content h2 { font-size: 1.9rem; }
+.rst-content h3 { font-size: 1.5rem; }
+
+/* landing-page title in small caps, like \textsc */
+.rst-content section#gwlens > h1,
+.rst-content div#gwlens > h1 {
+  font-family: "EB Garamond", Georgia, serif;
+  font-weight: 600;
+  font-size: 3rem;
+  letter-spacing: .04em;
+  text-transform: lowercase;          /* so every letter becomes a small cap */
+  font-variant-caps: small-caps;
+  margin-bottom: .2em;
+}
+.rst-content section#gwlens > h1::first-letter,
+.rst-content div#gwlens > h1::first-letter {
+  text-transform: uppercase;          /* full-size G, like \textsc{Gwlens} */
+  font-variant-caps: normal;
+}
+
+/* tagline with the acronym expanded */
+.gw-tagline {
+  font-family: "EB Garamond", Georgia, serif;
+  font-size: 1.25rem; font-style: italic;
+  color: #555; margin: 0 0 1.5rem;
+}
+
+/* =====================================================================
+   SIDEBAR HEADER: GitHub icon, theme toggle
+   ===================================================================== */
 .wy-side-nav-search {
     position: relative;
 }
@@ -20,3 +103,353 @@
 .wy-side-nav-search > a.sidebar-github-link .fa-github {
     font-size: inherit;
 }
+
+.wy-side-nav-search > button.theme-toggle {
+  position: absolute; top: 12px; left: 0.6em;       /* mirrors the GitHub icon */
+  width: 30px; height: 30px; padding: 0; margin: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; border-radius: 6px;
+  color: #fcfcfc; cursor: pointer; opacity: .9;
+}
+.wy-side-nav-search > button.theme-toggle:hover { background: rgba(255,255,255,.15); opacity: 1; }
+
+/* small "A" badge when following the system */
+.wy-side-nav-search > button.theme-toggle[data-mode="auto"]::after {
+  content: "A";
+  position: absolute; right: -2px; bottom: -2px;
+  font: 700 9px/1 sans-serif;
+  background: #fcfcfc; color: #2980b9;
+  border-radius: 3px; padding: 1px 3px;
+}
+
+/* =====================================================================
+   RIGHT-HAND "ON THIS PAGE" TOC (needs page-toc.js)
+   ===================================================================== */
+#page-toc {
+  position: fixed;
+  top: 90px;
+  right: 24px;
+  width: 240px;
+  max-height: calc(100vh - 130px);
+  overflow-y: auto;
+  font-size: 0.85rem;
+  display: none;               /* hidden on narrow screens */
+}
+@media (min-width: 1500px) { #page-toc { display: block; } }
+#page-toc .page-toc-title {
+  font-weight: 700; text-transform: uppercase; font-size: 0.75rem;
+  letter-spacing: 0.05em; color: #777; margin-bottom: 0.6rem;
+}
+#page-toc ul { list-style: none; margin: 0; padding: 0; border-left: 2px solid #e1e4e5; }
+#page-toc li a {
+  display: block; padding: 3px 0 3px 12px; color: #555; text-decoration: none;
+  margin-left: -2px; border-left: 2px solid transparent;
+}
+#page-toc li.toc-h3 a { padding-left: 26px; font-size: 0.8rem; }
+/* REDUNDANT (the accent system at the bottom sets these colors)
+#page-toc li a:hover { color: #2980b9; }
+#page-toc li a.active { color: #2980b9; font-weight: 600; border-left-color: #2980b9; }
+*/
+#page-toc li a.active { font-weight: 600; }
+
+/* =====================================================================
+   ANIMATION PANELS
+   ===================================================================== */
+.gw-figures {
+  display: flex; flex-wrap: wrap; gap: 1.25rem;
+  justify-content: center; margin: 2rem 0;
+}
+.gw-card {
+  flex: 1 1 320px; max-width: 420px; aspect-ratio: 1 / 1;
+  background: #000; border-radius: 10px; overflow: hidden;
+  border: 1px solid rgba(0,0,0,.15);
+  box-shadow: 0 2px 10px rgba(0,0,0,.2);
+}
+.gw-card > img, .gw-card > iframe, .gw-card > canvas, .gw-card > video {
+  width: 100%; height: 100%; display: block; object-fit: contain;
+}
+
+/* UNUSED NOW (only needed if you add separate light/dark image versions)
+html[data-theme="dark"]  .only-light { display: none !important; }
+html[data-theme="light"] .only-dark  { display: none !important; }
+*/
+
+/* =====================================================================
+   DARK MODE FOR THE RTD THEME
+   ===================================================================== */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --gw-bg: #0d1117;  --gw-surface: #161b22;  --gw-fg: #e6edf3;
+  --gw-muted: #9aa4af;  --gw-border: #30363d;
+  /* --gw-link: #58a6ff;   REDUNDANT: set by the accent system below */
+}
+html[data-theme="dark"] body,
+html[data-theme="dark"] .wy-body-for-nav,
+html[data-theme="dark"] .wy-nav-content-wrap,
+html[data-theme="dark"] .wy-nav-content { background: var(--gw-bg); color: var(--gw-fg); }
+
+html[data-theme="dark"] .rst-content h1,
+html[data-theme="dark"] .rst-content h2,
+html[data-theme="dark"] .rst-content h3,
+html[data-theme="dark"] .rst-content h4,
+html[data-theme="dark"] .rst-content p,
+html[data-theme="dark"] .rst-content li,
+html[data-theme="dark"] .rst-content td,
+html[data-theme="dark"] .rst-content th { color: var(--gw-fg); }
+html[data-theme="dark"] .rst-content a { color: var(--gw-link); }
+html[data-theme="dark"] .rst-content hr,
+html[data-theme="dark"] .rst-content table.docutils,
+html[data-theme="dark"] .rst-content table.docutils td,
+html[data-theme="dark"] .rst-content table.docutils th { border-color: var(--gw-border); }
+
+html[data-theme="dark"] .rst-content table.docutils:not(.field-list) td,
+html[data-theme="dark"] .rst-content table.docutils:not(.field-list) th {
+  background: var(--gw-bg); color: var(--gw-fg);
+}
+/* beat RTD's odd-row stripe */
+html[data-theme="dark"] .rst-content table.docutils:not(.field-list) tr:nth-child(2n-1) td,
+html[data-theme="dark"] .wy-table-striped tr:nth-child(2n-1) td,
+html[data-theme="dark"] .wy-table-odd td { background: var(--gw-surface); }
+
+html[data-theme="dark"] .rst-content table.docutils:not(.field-list) thead th { background: #1c2128; }
+html[data-theme="dark"] .rst-content .math,
+html[data-theme="dark"] .rst-content mjx-container { color: inherit; }
+
+/* code */
+html[data-theme="dark"] .rst-content div[class^="highlight"],
+html[data-theme="dark"] .rst-content pre.literal-block { background: var(--gw-surface); border-color: var(--gw-border); }
+html[data-theme="dark"] .rst-content code,
+html[data-theme="dark"] .rst-content .literal { background: var(--gw-surface); border-color: var(--gw-border); color: #ffa657; }
+
+/* nbsphinx notebook cells */
+html[data-theme="dark"] div.nbinput .input_area { background: var(--gw-surface); border-color: var(--gw-border); }
+html[data-theme="dark"] div.nboutput .output_area { color: var(--gw-fg); }
+html[data-theme="dark"] .nbinput .prompt, html[data-theme="dark"] .nboutput .prompt { color: var(--gw-muted); }
+
+/* right-hand "On this page" TOC */
+html[data-theme="dark"] #page-toc .page-toc-title { color: var(--gw-muted); }
+html[data-theme="dark"] #page-toc ul { border-left-color: var(--gw-border); }
+html[data-theme="dark"] #page-toc li a { color: var(--gw-muted); }
+html[data-theme="dark"] #page-toc li a:hover,
+html[data-theme="dark"] #page-toc li a.active { color: var(--gw-link); border-left-color: var(--gw-link); }
+
+/* =====================================================================
+   SIDEBAR COLORS FOLLOW THE THEME
+   ===================================================================== */
+:root {                       /* light */
+  --gw-side-bg: #ffffff;
+  --gw-side-text: #404040;
+  --gw-side-hover: #e8eaed;
+  --gw-side-current: #f0f2f4;
+  --gw-side-border: #e1e4e5;
+  /* --gw-side-caption: #2980b9;   REDUNDANT: set by the accent system */
+  --gw-side-icon: #6b7280;
+}
+html[data-theme="dark"] {     /* dark */
+  --gw-side-bg: #0b0d10;
+  --gw-side-text: #c9d1d9;
+  --gw-side-hover: #1a1d21;
+  --gw-side-current: #14171a;
+  --gw-side-border: #262a30;
+  /* --gw-side-caption: #4aa3df;   REDUNDANT: set by the accent system */
+  --gw-side-icon: #8b949e;
+}
+
+.wy-nav-side { background: var(--gw-side-bg); border-right: 1px solid var(--gw-side-border); }
+
+.wy-menu-vertical a { color: var(--gw-side-text); }
+.wy-menu-vertical a:hover { background: var(--gw-side-hover); color: var(--gw-side-text); }
+.wy-menu-vertical header,
+.wy-menu-vertical p.caption { color: var(--gw-side-caption); }
+
+.wy-menu-vertical li.current,
+.wy-menu-vertical li.current > a,
+.wy-menu-vertical li.toctree-l1.current > a {
+  background: var(--gw-side-current); color: var(--gw-side-text); border-color: var(--gw-side-border);
+}
+.wy-menu-vertical li.current a { color: var(--gw-side-text); border-right: 0; }
+.wy-menu-vertical li.current a:hover { background: var(--gw-side-hover); }
+.wy-menu-vertical li.toctree-l2.current > a,
+.wy-menu-vertical li.toctree-l2.current li.toctree-l3 > a { background: var(--gw-side-current); }
+.wy-menu-vertical li.current > a { font-weight: 600; }
+.wy-menu-vertical li span.toctree-expand { color: var(--gw-side-icon); }
+
+/* breadcrumbs: home icon and parent links in the accent color */
+.wy-breadcrumbs a,
+.wy-breadcrumbs a:visited { color: var(--gw-accent); }
+.wy-breadcrumbs a:hover   { color: var(--gw-accent-strong); }
+.wy-breadcrumbs > li      { color: inherit; }   /* current page title keeps the text color */
+.wy-breadcrumbs-aside a   { color: var(--gw-accent); }   /* "Edit on GitHub" link on the right */
+
+html[data-theme="dark"] .wy-breadcrumbs > li { color: var(--gw-fg); }
+html[data-theme="dark"] .wy-breadcrumbs li.breadcrumb-item-sep { color: var(--gw-muted); }
+
+/* =====================================================================
+   LAYOUT: wider content column, bigger animation cards
+   ===================================================================== */
+@media (min-width: 1100px) {
+  .wy-nav-content { max-width: min(1100px, calc(100vw - 620px)); }
+}
+.gw-card { max-width: 520px; }      /* overrides the 420px above */
+
+/* =====================================================================
+   DARK MODE: alerts / admonitions
+   ===================================================================== */
+
+/* nbsphinx: warnings / stderr output in dark mode */
+html[data-theme="dark"] div.nboutput.container div.output_area.stderr {
+  background: rgba(242,159,151,.12);
+  border-left: 3px solid #f29f97;
+}
+html[data-theme="dark"] div.nboutput.container div.output_area.stderr pre {
+  color: #f6b8b1;
+  background: transparent;
+}
+
+/* the normal text output next to it, so the two match */
+html[data-theme="dark"] div.nboutput.container div.output_area.stdout pre,
+html[data-theme="dark"] div.nboutput.container div.output_area pre {
+  background: transparent;
+  color: var(--gw-fg);
+}
+
+html[data-theme="dark"] :is(.admonition, .wy-alert, .alert, .nbsphinx-admonition,
+                            .warning, .attention, .caution) {
+  background: rgba(240,179,126,.10) !important;
+  border: 1px solid rgba(240,179,126,.35) !important;
+  border-left: 4px solid #f0b37e !important;
+  color: var(--gw-fg) !important;
+}
+html[data-theme="dark"] :is(.admonition, .wy-alert, .alert, .nbsphinx-admonition,
+                            .warning, .attention, .caution, .note, .tip, .danger)
+  :is(p, li, span, strong, em, td) {
+  color: var(--gw-fg) !important;
+}
+html[data-theme="dark"] :is(.admonition-title, .wy-alert-title) {
+  background: #f0b37e !important;
+  color: #0d1117 !important;
+}
+html[data-theme="dark"] :is(.admonition-title, .wy-alert-title) * { color: #0d1117 !important; }
+
+/* blue: note / info */
+html[data-theme="dark"] :is(.note, .seealso, .alert-info) {
+  background: rgba(106,176,222,.10) !important;
+  border-color: rgba(106,176,222,.35) !important;
+  border-left-color: #6ab0de !important;
+}
+html[data-theme="dark"] :is(.note, .seealso, .alert-info) :is(.admonition-title, .wy-alert-title) { background: #6ab0de !important; }
+
+/* green: tip / hint / important / success */
+html[data-theme="dark"] :is(.tip, .hint, .important, .alert-success) {
+  background: rgba(26,188,156,.10) !important;
+  border-color: rgba(26,188,156,.35) !important;
+  border-left-color: #1abc9c !important;
+}
+html[data-theme="dark"] :is(.tip, .hint, .important, .alert-success) :is(.admonition-title, .wy-alert-title) { background: #1abc9c !important; }
+
+/* red: danger / error */
+html[data-theme="dark"] :is(.danger, .error, .alert-danger) {
+  background: rgba(242,159,151,.10) !important;
+  border-color: rgba(242,159,151,.35) !important;
+  border-left-color: #f29f97 !important;
+}
+html[data-theme="dark"] :is(.danger, .error, .alert-danger) :is(.admonition-title, .wy-alert-title) { background: #f29f97 !important; }
+
+/* =====================================================================
+   ACCENT SYSTEM: change --gw-accent-base and everything follows
+   ===================================================================== */
+:root {
+  --gw-accent-base: #0f8f82;     /* <-- the ONE value to edit */
+}
+
+/* light theme: derived colors */
+:root {
+  --gw-accent:        var(--gw-accent-base);                                   /* links, highlights */
+  --gw-accent-strong: color-mix(in srgb, var(--gw-accent-base) 82%, black);    /* hover / pressed */
+  --gw-accent-soft:   color-mix(in srgb, var(--gw-accent-base) 12%, transparent);
+  --gw-header-bg:     color-mix(in srgb, var(--gw-accent-base) 88%, black);    /* sidebar header, mobile bar */
+  /* --gw-on-accent:  #ffffff;    UNUSED: nothing references it yet */
+  --gw-link:          var(--gw-accent);
+  --gw-side-caption:  var(--gw-accent);
+}
+/* dark theme: same base, lightened so it reads on near-black */
+html[data-theme="dark"] {
+  --gw-accent:        color-mix(in srgb, var(--gw-accent-base) 70%, white);
+  --gw-accent-strong: color-mix(in srgb, var(--gw-accent-base) 55%, white);
+  --gw-accent-soft:   color-mix(in srgb, var(--gw-accent-base) 22%, transparent);
+  /* --gw-on-accent:  #0d1117;    UNUSED: nothing references it yet */
+  --gw-link:          var(--gw-accent);
+  --gw-side-caption:  var(--gw-accent);
+}
+
+/* sphinx_design buttons (cards and badges follow the same variables) */
+:root {
+  --sd-color-primary:             var(--gw-accent-base);
+  --sd-color-primary-text:        #ffffff;
+  --sd-color-primary-highlight:   var(--gw-accent-strong);
+  --sd-color-secondary:           var(--gw-accent-base);
+  --sd-color-secondary-text:      #ffffff;
+  --sd-color-secondary-highlight: var(--gw-accent-strong);
+}
+html[data-theme="dark"] {
+  --sd-color-primary:             var(--gw-accent);
+  --sd-color-primary-text:        #0d1117;
+  --sd-color-primary-highlight:   var(--gw-accent-strong);
+  --sd-color-secondary:           var(--gw-accent);
+  --sd-color-secondary-text:      #0d1117;
+  --sd-color-secondary-highlight: var(--gw-accent-strong);
+}
+/* UNUSED NOW (the landing page has buttons but no card grid yet)
+.sd-card:hover { border-color: var(--gw-accent) !important; }
+*/
+
+/* header block (title, search) and mobile top bar */
+.wy-side-nav-search,
+.wy-nav-top { background: var(--gw-header-bg); }
+.wy-side-nav-search input[type="text"] {
+  border-color: color-mix(in srgb, var(--gw-header-bg) 70%, black);
+}
+.wy-side-nav-search > button.theme-toggle[data-mode="auto"]::after { color: var(--gw-header-bg); }
+
+/* sidebar: accent bar on the current page */
+.wy-menu-vertical li.toctree-l1.current > a { box-shadow: inset 3px 0 0 var(--gw-accent); }
+
+/* tagline acronym and landing-page title underline */
+.gw-tagline b { color: var(--gw-accent); }
+.gw-tagline::after {
+  content: ""; display: block; width: 100%; height: 1px;
+  margin-top: 1.1rem;
+  background: linear-gradient(to right, var(--gw-accent), transparent 70%);
+}
+
+/* links in the page body (not buttons or the pilcrow anchors) */
+.rst-content a.reference:not(.sd-btn):not(.sd-stretched-link),
+.rst-content a.reference:not(.sd-btn):not(.sd-stretched-link):visited { color: var(--gw-accent); }
+.rst-content a.reference:not(.sd-btn):not(.sd-stretched-link):hover { color: var(--gw-accent-strong); }
+
+/* right-hand "On this page" TOC */
+#page-toc li a:hover { color: var(--gw-accent-strong); }
+#page-toc li a.active { color: var(--gw-accent); border-left-color: var(--gw-accent); }
+
+/* animation cards: accent outline on hover */
+.gw-card { transition: border-color .2s, box-shadow .2s; }
+.gw-card:hover {
+  border-color: var(--gw-accent);
+  box-shadow: 0 0 0 1px var(--gw-accent), 0 4px 18px var(--gw-accent-soft);
+}
+
+/* small touches */
+.rst-content blockquote {
+  border-left: 4px solid var(--gw-accent);
+  background: var(--gw-accent-soft);
+  margin: 1.25rem 0;
+  padding: .75rem 1.1rem;
+  border-radius: 0 6px 6px 0;
+}
+.rst-content blockquote > :first-child { margin-top: 0; }
+.rst-content blockquote > :last-child  { margin-bottom: 0; }
+.rst-content table.docutils:not(.field-list) thead th { border-bottom: 2px solid var(--gw-accent); }
+::selection { background: var(--gw-accent-soft); }
+:focus-visible { outline: 2px solid var(--gw-accent); outline-offset: 2px; }
+input[type="checkbox"], input[type="radio"], progress { accent-color: var(--gw-accent); }
+.copybtn:hover { color: var(--gw-accent); }
