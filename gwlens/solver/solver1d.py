@@ -1,4 +1,3 @@
-
 import os
 import math
 import time
@@ -8,13 +7,17 @@ import warnings
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import numpy as np
 from scipy.special import j0, y0, jv, hankel1e, hankel2e, roots_legendre, roots_laguerre
 try:
-    import finufft                     
+    import finufft
 except ImportError:
     finufft = None
+try:                                    # optional: keeps BLAS single-threaded inside the small matrix products
+    from threadpoolctl import ThreadpoolController
+except ImportError:
+    ThreadpoolController = None
 
 
 class Potential:
@@ -337,12 +340,14 @@ def _bary_matrix(xc, xe):
     n = xc.size
     wts = (-1.0) ** np.arange(n) * np.sin(np.pi * (np.arange(n) + 0.5) / n)
     d = xe[:, None] - xc[None, :]
-    exact = np.isclose(d, 0.0, atol=1e-15)
-    d[exact] = 1.0
+    exact = np.abs(d) <= 1e-15
+    if exact.any():
+        d[exact] = 1.0
     M = wts[None, :] / d
     M /= M.sum(axis=1, keepdims=True)
-    rows = np.any(exact, axis=1)
-    M[rows] = exact[rows].astype(float)
+    if exact.any():
+        rows = np.any(exact, axis=1)
+        M[rows] = exact[rows].astype(float)
     return M
 
 
@@ -414,9 +419,198 @@ def _h_env(z):
     if far.any():
         out[far] = _h_asym(z[far])
     zn = z[~far]
-    #Exact definition is used here and it is called from scipy 
+    #Exact definition is used here and it is called from scipy
     out[~far] = (j0(zn) + 1j * y0(zn)) * np.exp(-1j * zn)
     return out
+
+
+# ---- Bessel functions of complex argument (the rotated tail), without scipy's slow AMOS routines.
+# Valid for Re z > 0 (the tail has 0 <= arg z < pi/4). |z| >= z_asy: Hankel asymptotic series
+# (DLMF 10.17.5, error below the smallest term ~ e^{-2|z|}); |z| <= z_ser: ascending series of J0
+# and Y0 (DLMF 10.8.2, ~(|z|/2)^{2k}/k!^2 of cancellation); in between: scipy.
+# Default (8, 17): ~1e-14 relative (J0 scale); (11, 11) for looser settings: < 1e-9, no scipy calls.
+_ZC_SER, _ZC_ASY = 9.0, 14.0
+_AK = [1.0]
+for _k in range(1, 40):
+    _AK.append(_AK[-1] * (2 * _k - 1) ** 2 / (8.0 * _k))
+_AK = np.array(_AK)                                                    # |a_k(0)|
+_LOG_AK = np.log(_AK)
+_EULER = 0.5772156649015329
+_HARM = np.concatenate([[0.0], np.cumsum(1.0 / np.arange(1, 40))])     # harmonic numbers H_k
+
+
+def _hank_asym_c(z):
+    """(H0^(1)(z) e^{-iz}, H0^(2)(z) e^{iz}) for complex |z| >= _ZC_ASY (asymptotic series)."""
+    a = float(np.min(np.abs(z)))
+    k = np.arange(1, _AK.size)
+    small = np.nonzero(_LOG_AK[1:] - k * np.log(a) < np.log(1e-17))[0]
+    K = int(min(_AK.size, (small[0] + 2) if small.size else _AK.size, max(4, int(2 * a))))
+    c = _AK[:K] * (-1j) ** np.arange(K)                               # i^k a_k(0), a_k(0) = (-1)^k |a_k|
+    t = 1.0 / z
+    sp = np.full(z.shape, c[-1], dtype=complex)
+    sm = np.full(z.shape, np.conj(c[-1]), dtype=complex)
+    for ck in c[-2::-1]:
+        sp *= t
+        sp += ck
+        sm *= t
+        sm += np.conj(ck)
+    pre = np.sqrt(2.0 / (np.pi * z))
+    return pre * (np.exp(-0.25j * np.pi) * sp), pre * (np.exp(0.25j * np.pi) * sm)
+
+
+def _j0y0_series_c(z, need_y=True):
+    """J0(z), Y0(z) by their ascending series (complex z, |z| <= _ZC_SER); Y0 is None if not need_y."""
+    q = -0.25 * z * z
+    a2 = (0.5 * float(np.max(np.abs(z)))) ** 2
+    term = np.ones(z.shape, dtype=complex)
+    J = term.copy()
+    S = np.zeros(z.shape, dtype=complex)
+    mag = 1.0
+    for k in range(1, 40):
+        term *= q / (k * k)
+        J += term
+        if need_y:
+            S += _HARM[k] * term
+        mag *= a2 / (k * k)
+        if mag < 1e-18:
+            break
+    if not need_y:
+        return J, None
+    return J, (2.0 / np.pi) * ((np.log(0.5 * z) + _EULER) * J - S)
+
+
+def _hankel_e_c(z, z_ser=_ZC_SER, z_asy=_ZC_ASY):
+    """scipy's (hankel1e(0, z), hankel2e(0, z)) for complex z with Re z > 0, mostly without scipy."""
+    z = np.asarray(z, dtype=complex)
+    a = np.abs(z)
+    h1 = np.empty(z.shape, dtype=complex)
+    h2 = np.empty(z.shape, dtype=complex)
+    far, near = a >= z_asy, (a <= z_ser) & (a < z_asy)
+    mid = ~(far | near)
+    if far.any():
+        h1[far], h2[far] = _hank_asym_c(z[far])
+    if near.any():
+        zn = z[near]
+        J, Y = _j0y0_series_c(zn)
+        e = np.exp(-1j * zn)
+        h1[near] = (J + 1j * Y) * e
+        h2[near] = (J - 1j * Y) / e
+    if mid.any():
+        h1[mid] = hankel1e(0, z[mid])
+        h2[mid] = hankel2e(0, z[mid])
+    return h1, h2
+
+
+def _j0_c(z, z_ser=_ZC_SER, z_asy=_ZC_ASY):
+    """J0(z) for complex z with Re z > 0 (scipy's jv(0, z) costs ~1 us per value)."""
+    z = np.asarray(z, dtype=complex)
+    a = np.abs(z)
+    out = np.empty(z.shape, dtype=complex)
+    far, near = a >= z_asy, (a <= z_ser) & (a < z_asy)
+    mid = ~(far | near)
+    if far.any():
+        zf = z[far]
+        h1, h2 = _hank_asym_c(zf)
+        e = np.exp(1j * zf)
+        out[far] = 0.5 * (h1 * e + h2 / e)
+    if near.any():
+        out[near] = _j0y0_series_c(z[near], need_y=False)[0]
+    if mid.any():
+        out[mid] = jv(0, z[mid])
+    return out
+
+
+# ---- error models that size the quadrature and the interpolation (Bernstein-ellipse bounds)
+_RHO = 1.0 + np.geomspace(1e-3, 60.0, 64)
+
+
+def _rho_sing(ts):
+    """Bernstein-ellipse parameter of a singular point at t = -ts (ts >= 1) of the interval [-1, 1]."""
+    ts = np.maximum(np.asarray(ts, dtype=float), 1.0)
+    return ts + np.sqrt(ts * ts - 1.0)
+
+
+def _gl_log_err(n, kappa, ts):
+    """log of the Gauss-Legendre error bound for exp(i kappa t) g(t) on [-1, 1], g singular at t = -ts:
+    min_rho (64/15) M rho^(-2n) / (rho^2 - 1), M = exp(kappa (rho - 1/rho) / 2), rho < rho_s^0.9."""
+    kappa, ts, n = np.broadcast_arrays(np.asarray(kappa, float), np.asarray(ts, float), np.asarray(n, float))
+    r = _RHO[None, :]
+    v = (np.log(64.0 / 15.0) - np.log(r * r - 1.0) + kappa.reshape(-1, 1) * (r - 1.0 / r) / 2.0
+         - 2.0 * n.reshape(-1, 1) * np.log(r))
+    v = np.where(r < _rho_sing(ts).reshape(-1, 1) ** 0.9, v, np.inf)
+    return v.min(axis=1).reshape(kappa.shape)
+
+
+_GL_TAB, _GLC_TAB = {}, {}
+_GLC_K = np.concatenate([[0.0], np.geomspace(1e-3, 1e3, 73)])          # kappa grid of the lookup table
+_GLC_T = np.geomspace(1.0, 1e8, 81)                                     # ts grid
+
+
+def _gl_table(n_max):
+    """Gauss-Legendre points and weights for n = 1..n_max, padded into (n_max + 1, n_max) arrays."""
+    tab = _GL_TAB.get(n_max)
+    if tab is None:
+        GX, GW = np.zeros((n_max + 1, n_max)), np.zeros((n_max + 1, n_max))
+        for n in range(1, n_max + 1):
+            GX[n, :n], GW[n, :n] = _gl(n)
+        tab = _GL_TAB[n_max] = (GX, GW)
+    return tab
+
+
+def _gl_count_fast(kappa, ts, log_eps, n_min, n_max):
+    """_gl_count from a lookup table (cell corner with the larger kappa and the smaller ts: never fewer
+    points than the exact rule at the grid points)."""
+    key = (round(log_eps, 9), n_min, n_max)
+    tab = _GLC_TAB.get(key)
+    if tab is None:
+        tab = _GLC_TAB[key] = _gl_count(_GLC_K[:, None], _GLC_T[None, :], log_eps, n_min, n_max)
+    i = np.minimum(np.searchsorted(_GLC_K, kappa, side="left"), _GLC_K.size - 1)
+    j = np.clip(np.searchsorted(_GLC_T, ts, side="right") - 1, 0, _GLC_T.size - 1)
+    n = tab[i, j]
+    big = kappa > _GLC_K[-1]
+    if np.any(big):
+        n[big] = _gl_count(kappa[big], ts[big], log_eps, n_min, n_max)
+    return n
+
+
+def _gl_count(kappa, ts, log_eps, n_min, n_max):
+    """Fewest Gauss-Legendre points whose error bound (see _gl_log_err) is below exp(log_eps)."""
+    kappa, ts = np.broadcast_arrays(np.asarray(kappa, float), np.asarray(ts, float))
+    r = _RHO[None, :]
+    n = ((np.log(64.0 / 15.0) - np.log(r * r - 1.0) + kappa.reshape(-1, 1) * (r - 1.0 / r) / 2.0 - log_eps)
+         / (2.0 * np.log(r)))
+    n = np.where(r < _rho_sing(ts).reshape(-1, 1) ** 0.9, n, np.inf).min(axis=1)
+    return np.clip(np.ceil(n), n_min, n_max).astype(int).reshape(kappa.shape)
+
+
+def _cheb_count(Bh, ts, log_tol):
+    """Chebyshev points to interpolate G on a panel to exp(log_tol): |G| <= e^{B |Im w|}, G singular at
+    w = 0 (t = -ts). Coefficients decay as M rho^(-n) (Trefethen, ATAP Thm 8.1; the prefactor is dropped,
+    the actual decay of F is faster), minimised over 1 < rho < rho_s."""
+    Bh, ts = np.broadcast_arrays(np.asarray(Bh, float), np.asarray(ts, float))
+    r = _RHO[None, :]
+    n = (Bh.reshape(-1, 1) * (r - 1.0 / r) / 2.0 - log_tol) / np.log(r)
+    n = np.where(r < _rho_sing(ts).reshape(-1, 1), n, np.inf).min(axis=1)
+    return (np.ceil(n) + 1).reshape(Bh.shape)
+
+
+# ---- threads: BLAS stays single-threaded inside the (small) matrix products of a spectrum
+_TPC = {}
+
+
+def _blas_single():
+    if ThreadpoolController is None:
+        return nullcontext()
+    ctl = _TPC.get(os.getpid())
+    if ctl is None:
+        try:
+            ctl = _TPC[os.getpid()] = ThreadpoolController()
+        except Exception:
+            return nullcontext()
+    try:
+        return ctl.limit(limits=1, user_api="blas")
+    except Exception:
+        return nullcontext()
 
 
 _WARNED = set()
@@ -493,6 +687,26 @@ def _shutdown_pool(ex, pid):
 
 
 # ================================================================== solver
+class _LazyBands:
+    """The frequency bands of a solver, each built on first use: a sparse set of frequencies builds only
+    the bands it touches. Indexing and iteration work as for a list."""
+
+    def __init__(self, solver, lohi):
+        self._s, self.lohi, self._b = solver, list(lohi), [None] * len(lohi)
+
+    def __len__(self):
+        return len(self._b)
+
+    def __getitem__(self, i):
+        b = self._b[i]
+        if b is None:
+            b = self._b[i] = self._s._make_band(*self.lohi[i])
+        return b
+
+    def __iter__(self):
+        return (self[i] for i in range(len(self)))
+
+
 class Solver1D:
     """
     Everything that does not depend on (w, y), for all wmin <= w <= wmax and all source positions
@@ -504,20 +718,31 @@ class Solver1D:
       s.profile(w, ys)        one frequency, many source positions    -> direct sums
       s.evaluate(ws, ys)      table (len(ys), len(ws))
 
-    Accuracy/tuning  parameters (defaults give ~1e-12): 
-    cycles, ngl (phase cycles / Gauss-Legendre nodes per head piece), nlag (Laguerre nodes on the tail), n_cheb (Chebyshev frequencies per band),
+    Accuracy/tuning  parameters (defaults give ~1e-12):
+    cycles, ngl (phase cycles / maximum Gauss-Legendre nodes per head piece), nlag (Laguerre nodes on the tail), n_cheb (Chebyshev frequencies per band),
     band_ratio (width of the frequency bands), xb_min (move the split outward = convergence test),
-    nufft_eps (FINUFFT tolerance), z_small (w y x below which J0 is used by its Taylor series).
+    nufft_eps (FINUFFT tolerance), z_small (w y x below which J0 is used by its Taylor series),
+    adaptive_gl (True: pieces with little phase get fewer nodes, sized by an error bound calibrated
+    on the full pieces with ngl nodes; False: ngl nodes on every piece, as before).
     PE_SETTINGS: lighter settings for parameter estimation (accuracy ~1e-8).
 
-    Interpolation (for very many frequencies)
-      interpolate  False (default): every frequency is computed. True: F is computed on Chebyshev
-                   panels sized by the lens time delays and interpolated to the requested
-                   frequencies (worth it from ~10^4 frequencies on). 'auto': whichever is cheaper.
+    How a band is summed (speed): the head nodes near u = 0, where the phase w A_j changes by less than
+    a few radians across the band and w y x_j is small, are summed once into a polynomial in w
+    (Taylor series of exp(i (w - w_mid) A_j) and of J0; computed on the first call that needs the
+    band); only the remaining nodes are summed per frequency (directly, or by NUFFT for many
+    frequencies). Bands are built when first needed, so a few frequencies build only their bands.
+
+    Interpolation (for many frequencies)
+      interpolate  True (default): F is computed on Chebyshev panels sized by the lens time delays
+                   (number of points per panel from an error bound) and interpolated to the requested
+                   frequencies; used when it needs fewer exact evaluations than requested frequencies.
+                   False: every frequency is computed. 'auto': interpolate only for >= ~4000 frequencies.
                    Can also be passed per call: s.spectrum(ws, y, interpolate=True).
-      interp_tol   the interpolant is checked against exact values at a few frequencies per call;
-                   if the relative error exceeds interp_tol the panels are refined (max 3 times),
-                   then the exact path is used.
+      interp_tol   the interpolant is checked against exact values at four frequencies per panel;
+                   a panel whose relative error exceeds interp_tol/3 is split (max 3 times); if
+                   interp_tol is still not reached, the exact path is used. None (default):
+                   max(1e-10, 100 nufft_eps), i.e. above the accuracy of the exact values (1e-7 with
+                   PE_SETTINGS).
 
     Parallelism
       n_workers   maximum number of processes for evaluate() (1: none; None: all cores); used only
@@ -543,16 +768,19 @@ class Solver1D:
         Maximum number of phase cycles per integration head piece. Affects the
         granularity of the integration scheme (default: 8).
     ngl : int, optional
-        Number of Gauss-Legendre quadrature nodes per head piece. Higher values
+        Number of Gauss-Legendre quadrature nodes per full head piece (``cycles`` phase
+        cycles); with ``adaptive_gl`` lighter pieces get fewer. Higher values
         increase accuracy but raise computational cost (default: 32).
     nlag : int, optional
         Number of Gauss-Laguerre quadrature nodes on the tail portion of the
         integration domain (default: 30).
     n_cheb : int, optional
-        Number of Chebyshev polynomial frequencies per frequency band (default: 14).
+        Number of Chebyshev polynomial frequencies per frequency band (default: 18;
+        14 gives the same accuracy for band_ratio=4).
     band_ratio : float, optional
         Width ratio defining the frequency bands. Controls the logarithmic spacing
-        of frequency intervals (default: 4.0).
+        of frequency intervals (default: 8.0; fewer bands than 4.0 with n_cheb=14,
+        same accuracy, ~20% faster).
     xb_min : float, optional
         Parameter to shift the split point outward for convergence testing
         and validation. Used in adaptive refinement (default: 0.0).
@@ -567,10 +795,14 @@ class Solver1D:
     n_workers : int, optional
         Number of CPU cores for parallel processing. If ``None``, uses all
         available cores (default: None).
-    interpolate : bool, optional
-        If ``True``, applies interpolation to the calculated frequencies.
-        Useful for parameter estimation and smoothing results. Can reduce
-        artifacts at band boundaries (default: False).
+    interpolate : bool or 'auto', optional
+        If ``True``, F is computed on Chebyshev panels in w and interpolated to the
+        requested frequencies when that needs fewer exact evaluations (default: True).
+    interp_tol : float, optional
+        Relative accuracy required of the interpolation in w (default: None, i.e.
+        max(1e-10, 100 nufft_eps)).
+    adaptive_gl : bool, optional
+        Fewer Gauss-Legendre nodes on head pieces with little phase (default: True).
  
     Returns
     -------
@@ -611,9 +843,9 @@ class Solver1D:
 
     """
 
-    def __init__(self, lens, y=0.0, wmin=1e-3, wmax=1e3, y_radius=0.0, cycles=8, ngl=32, nlag=30, n_cheb=14,
-                 band_ratio=4.0, xb_min=0.0, nufft_eps=1e-14, z_small=1.0, n_workers=1, threads=None,
-                 interpolate=True, interp_tol=1e-10):
+    def __init__(self, lens, y=0.0, wmin=1e-3, wmax=1e3, y_radius=0.0, cycles=8, ngl=32, nlag=30, n_cheb=18,
+                 band_ratio=8.0, xb_min=0.0, nufft_eps=1e-14, z_small=1.0, n_workers=1, threads=None,
+                 interpolate=True, interp_tol=None, adaptive_gl=True):
         """
         Initialize the 1D lensing solver.
 
@@ -624,10 +856,10 @@ class Solver1D:
         wmin, wmax  : frequency range (default: 1e-3, 1e3)
         y_radius    : half-width of the source position range (default: 0.0)
         cycles      : max phase cycles per head piece (default: 8)
-        ngl         : Gauss-Legendre nodes per head piece (default: 32)
+        ngl         : Gauss-Legendre nodes per full head piece (default: 32)
         nlag        : Gauss-Laguerre nodes on the tail (default: 30)
-        n_cheb      : Chebyshev frequencies per band (default: 14)
-        band_ratio  : width of the frequency bands (default: 4.0)
+        n_cheb      : Chebyshev frequencies per band (default: 18)
+        band_ratio  : width of the frequency bands (default: 8.0)
         xb_min      : move the split outward = convergence test (default: 0.0)
         nufft_eps   : FINUFFT tolerance (default: 1e-14)
         z_small     : w y x below which J0 is used by its Taylor series (default: 1.0)
@@ -663,12 +895,22 @@ class Solver1D:
             raise ValueError("interpolate must be False, True or 'auto'")
         
         self.interpolate = interpolate
-        self.interp_tol = float(interp_tol)
+        self.interp_tol = max(1e-10, 100 * self.nufft_eps) if interp_tol is None else float(interp_tol)
+        self.adaptive_gl = bool(adaptive_gl)
         self._tdcache = {}
+        self._tdgrid = None
+        self._pcache = {}
         self._pool = self._pool_fin = self._pool_pid = None
 
         self.GX, self.GW = _gl(self.ngl)
         self.LX, self.LW = _lag(self.nlag)
+        # error level of a full head piece (pi*cycles radians half-phase, ngl nodes): lighter pieces get
+        # the fewest nodes that reach the same bound (not below 1e-16: rounding)
+        self._gl_log_eps = max(float(_gl_log_err(self.ngl, np.pi * self.cycles, 1e12)), np.log(1e-16))
+        self._gl_nmin = min(self.ngl, 4)
+        # truncation of the Taylor series (cluster, J0): far below the accuracy of the settings
+        self._eps_t = float(np.clip(1e-3 * self.nufft_eps, 1e-17, 1e-11))
+        self._zc = (11.0, 11.0) if self._eps_t >= 1e-12 else (_ZC_SER, _ZC_ASY)   # complex Bessel ranges
 
         # ---- split: (y_hi + psi'(x_b))/x_b <= thr, thr = 1/2 (or (1 + kappa)/2 with a mass sheet)
         q = lens.q_inf
@@ -699,27 +941,39 @@ class Solver1D:
 
         # ---- phase per unit w, V1(u) (worst case over the y range), places the head pieces
         # Its a Phase meter here
+        # linear grid on [0, u_b0] (resolves the oscillation), geometric grid out to ub_max (beyond u_b0
+        # A(u) is monotonic, so ~60 points per e-fold suffice there and near u = 0)
         n_lin = int(max(3000, 3 * self.wmax * self.ub0 / (2 * np.pi)))
+        n_geo = int(min(20000, max(2000, 60 * np.log(self.ub_max / self.u_floor))))
         ug = np.unique(np.concatenate([np.linspace(self.u_floor, self.ub0, n_lin),
-                                       np.geomspace(self.u_floor, self.ub_max, 20000)]))
+                                       np.geomspace(self.u_floor, self.ub_max, n_geo)]))
         x = np.sqrt(2 * ug)
         with np.errstate(all="ignore"):
             d = np.abs(np.diff(ug - lens.real(x)))
         d[~np.isfinite(d)] = 0.0
         self.ug, self.V1 = ug, np.concatenate([[0.0], np.cumsum(d)]) + self.y_hi * (x - x[0])
+        self.rate = np.diff(self.V1) / np.diff(self.ug)      # phase per unit w per unit u
 
         # ---- frequency bands [w_hi / band_ratio, w_hi], from wmax down to wmin
-        self.bands, hi = [], self.wmax
+        # (each band is built when it is first needed, see _LazyBands)
+        lohi, hi = [], self.wmax
         while True:
             lo = max(self.wmin, hi / band_ratio)
-            self.bands.append(self._make_band(lo, hi))
+            lohi.append((lo, hi))
             if lo <= self.wmin * (1 + 1e-12):
                 break
             hi = lo
+        self.bands = _LazyBands(self, lohi)
         self._tcache = {}
-        self.info = dict(x_b=self.xb0, q_inf=q, y_range=(self.y_lo, self.y_hi),
-                         bands=[(b["lo"], b["hi"], b["ub"], b["x"].size) for b in self.bands],
-                         n_nodes=int(sum(b["x"].size for b in self.bands)))
+        self._hcache = {}
+
+    @property
+    def info(self):
+        """Split point, q_inf, y range and per band (lo, hi, u_b, nodes); builds all bands."""
+        return dict(x_b=self.xb0, q_inf=self.q_inf, y_range=(self.y_lo, self.y_hi),
+                    bands=[(b["lo"], b["hi"], b["ub"], b["xa"].size) for b in self.bands],
+                    n_nodes=int(sum(b["xa"].size for b in self.bands)),
+                    n_nodes_per_w=int(sum(b["x"].size for b in self.bands)))
 
 
     def _make_band(self, lo, hi):
@@ -747,6 +1001,8 @@ class Solver1D:
         - xt : array of x_j nodes for the tail
         - dx : array of differences xt - xb for the tail
         - E : array of weights for the tail
+        - cl : the near-zero cluster (nodes summed once into a polynomial in w), or None
+        - x, W, A then hold only the nodes outside the cluster (summed per frequency)
         """
         lens = self.lens
         ub = max(self.ub0, 20 / lo)                          # small-w rule
@@ -754,12 +1010,14 @@ class Solver1D:
         # head nodes: a piece every `cycles` phase cycles at w = hi, geometric grading towards 0
         V_ub = np.interp(ub, self.ug, self.V1)
         cuts = np.interp(np.arange(0, V_ub, 2 * np.pi * self.cycles / hi), self.V1, self.ug)
-        geo = np.geomspace(self.u_floor, ub, int(np.ceil(np.log(ub / self.u_floor))) + 1)
-        e = np.unique(np.concatenate([[0.0], geo, cuts[cuts < ub], np.linspace(0, ub, 5), [ub]]))
+        lg = np.log(self.u_floor)
+        geo = np.exp(np.linspace(lg, np.log(ub), int(np.ceil(np.log(ub) - lg)) + 1))
+        e = np.sort(np.concatenate([[0.0], geo, cuts[cuts < ub], np.linspace(0, ub, 5), [ub]]))
+        e = e[np.concatenate([[True], np.diff(e) > 0])]
         # the cuts bound the phase change per piece; also bound (largest phase rate) x (width), which
         # matters where the rate varies strongly inside a piece (stationary points: chirps)
         m = max(1, int(np.searchsorted(self.ug, ub, side="right")))
-        rate = (np.diff(self.V1) / np.diff(self.ug))[:m]   # phase per unit w per unit u, up to ub
+        rate = self.rate[:m]                                 # phase per unit w per unit u, up to ub
         i0 = np.clip(np.searchsorted(self.ug, e[:-1], side="right") - 1, 0, rate.size - 1)
         peak = np.maximum.reduceat(rate, i0)                 # largest rate in each piece
 
@@ -767,18 +1025,35 @@ class Solver1D:
         if np.any(n_sub > 1):
             e = np.unique(np.concatenate([e] + [np.linspace(e[k], e[k + 1], n + 1) for k, n in enumerate(n_sub) if n > 1]))
 
-        #Mid and the half points in each head piece    
+        #Mid and the half points in each head piece
         mid = (e[1:] + e[:-1]) / 2
         half = (e[1:] - e[:-1]) / 2
 
-        #32 Legendre points mapped into each piece and their weights
-        u = (mid[:, None] + half[:, None] * self.GX[None, :]).ravel()
-        W = (half[:, None] * self.GW[None, :]).ravel()
+        # Gauss-Legendre points per piece: ngl on the full pieces; with adaptive_gl, pieces with less
+        # phase (half-phase kappa at w = hi) or far from the singular point u = 0 get the fewest points
+        # that reach the error bound of a full piece (see _gl_count)
+        if self.adaptive_gl:
+            i0 = np.clip(np.searchsorted(self.ug, e[:-1], side="right") - 1, 0, rate.size - 1)
+            peak = np.maximum.reduceat(rate, i0)
+            dV = np.diff(np.interp(e, self.ug, self.V1))
+            kappa = 0.5 * hi * np.maximum(peak * np.diff(e), dV)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ts = np.where(e[:-1] > 0, (e[1:] + e[:-1]) / (e[1:] - e[:-1]), 1.0)
+            n_pc = _gl_count_fast(kappa, ts, self._gl_log_eps, self._gl_nmin, self.ngl)
+        else:
+            n_pc = np.full(mid.size, self.ngl)
+        # all pieces at once: piece p gets the n_pc[p]-point rule (padded table of rules)
+        GX, GW = _gl_table(self.ngl)
+        p = np.repeat(np.arange(mid.size), n_pc)
+        j = np.arange(p.size) - np.repeat(np.cumsum(n_pc) - n_pc, n_pc)
+        u = mid[p] + half[p] * GX[n_pc[p], j]
+        W = half[p] * GW[n_pc[p], j]
 
         x = np.sqrt(2 * u)
         with np.errstate(all="ignore"):
             A = u - lens.real(x)
-        
+        nc = self._cluster_size(lo, hi, x, A)
+
         # tail: decay rate for the largest y, psi at the complex Laguerre points of every
         # Chebyshev frequency of the band (y-independent)
 
@@ -798,9 +1073,140 @@ class Solver1D:
         
         t = self.LX[None, :] / (al * wc[:, None])
         xt = np.sqrt(2 * (ub + 1j * t))
-        E = self.LW[None, :] * np.exp(self.LX[None, :] * (1 - 1 / al) - 1j * wc[:, None] * (lens(xt) - psib))
-        return dict(lo=lo, hi=hi, ub=ub, xb=xb, al=al, psib=psib, x=x, W=W, A=A, cx=cx, wc=wc, xt=xt,
-                    dx=xt - xb, E=E, zlo=np.log(lo), zhi=np.log(hi))
+        # xa, Wa, Aa: all head nodes; x, W, A: the per-frequency ones (after the cluster of nc nodes)
+        return dict(lo=lo, hi=hi, ub=ub, xb=xb, al=al, psib=psib, xa=x, Wa=W, Aa=A, nc=nc,
+                    x=x[nc:], W=W[nc:], A=A[nc:], cx=cx, wc=wc, xt=xt, dx=xt - xb, E=None,
+                    zlo=np.log(lo), zhi=np.log(hi), cl=None)
+
+    def _tail_E(self, b):
+        """Tail weights at the Laguerre points of every Chebyshev frequency of band b (y-independent;
+        computed on first use)."""
+        if b["E"] is None:
+            al, wc = b["al"], b["wc"][:, None]
+            b["E"] = self.LW[None, :] * np.exp(self.LX[None, :] * (1 - 1 / al) - 1j * wc * (self.lens(b["xt"]) - b["psib"]))
+        return b["E"]
+
+    # ------------------------------------------------------------------ near-zero cluster
+    _PHI_CL = 3.0        # largest |(w - w_mid) (A_j - A_0)| in the cluster (Taylor terms ~ e^PHI, no cancellation)
+    _Z_CL = 2.0          # largest w y x_j in the cluster (J0 Taylor series)
+    _MIN_CL = 16         # fewer nodes than this: no cluster
+
+    _M_CL = 8            # fewer frequencies than this in a band (and no cluster yet): plain direct sums
+
+    def _cluster_size(self, lo, hi, x, A):
+        """Number of head nodes (sorted in u, from u = 0) in the near-zero cluster of band [lo, hi]: up to
+        the first node where the phase spread (hi - lo)/2 (max A - min A) exceeds 2 _PHI_CL or
+        hi y_hi x_j exceeds _Z_CL (0 if fewer than _MIN_CL)."""
+        n = x.size
+        if n < self._MIN_CL:
+            return 0
+        hw = 0.5 * (hi - lo)
+        with np.errstate(invalid="ignore"):
+            Amin = np.minimum.accumulate(A)
+            Amax = np.maximum.accumulate(A)
+            ok = np.isfinite(A) & (hw * (Amax - Amin) <= 2 * self._PHI_CL) & (hi * self.y_hi * x <= self._Z_CL)
+        nc = int(np.argmin(ok)) if not ok.all() else n
+        return nc if nc >= self._MIN_CL else 0
+
+    def _cluster(self, b):
+        """
+        The cluster of band b (computed on first use; None if the band has none). For its nc nodes,
+        over the band,
+            sum_cl W_j J0(w y x_j) e^{i w A_j}
+              = e^{i w A_0} sum_{k,l} Q_kl tau^k (w/hi)^{2l} a_l (y/y_hi)^{2l},   tau = (w - w_mid)/h_w,
+            Q_kl = sum_cl W_j e^{i w_mid d_j} (i h_w d_j)^k / k! (hi y_hi x_j)^{2l},   d_j = A_j - A_0,
+        (Taylor series of exp(i (w - w_mid) d_j) and of J0, a_l = (-1)^l / (4^l l!^2)). Q does not depend
+        on w or y: these nodes cost nothing per frequency.
+        """
+        nc = b["nc"]
+        if nc == 0:
+            return None
+        if b["cl"] is not None:
+            return b["cl"]
+        lo, hi = b["lo"], b["hi"]
+        hw, wm = 0.5 * (hi - lo), 0.5 * (hi + lo)
+        yr = self.y_hi
+        xc, Wc, Ac = b["xa"][:nc], b["Wa"][:nc], b["Aa"][:nc]
+        A0 = 0.5 * (Ac.max() + Ac.min())
+        d = Ac - A0
+        phi = hw * float(np.max(np.abs(d)))
+        K, mag = 1, 1.0                                      # Taylor terms of exp(i phi tau): phi^K/K! < 1e-17
+        while K < 60 and mag * phi ** K / math.factorial(K) > self._eps_t:
+            K += 1
+        if hw == 0:
+            K = 1
+        # Q_kl = i^k sum_j [(h_w d_j)^k / k!] [W_j e^{i w_mid d_j} (hi y_hi x_j)^{2l}]
+        Pc = Wc * np.exp(1j * wm * d)
+        if K > 1:
+            R = np.empty((K, nc))
+            R[0] = 1.0
+            R[1:] = (hw * d)[None, :] / np.arange(1, K)[:, None]
+            np.cumprod(R, axis=0, out=R)
+        else:
+            R = np.ones((1, nc))
+        if yr > 0:
+            X = (hi * yr * xc) ** 2
+            zmax2 = float(X.max())
+            L = 1
+            while L < _J0_TAYLOR.size and abs(_J0_TAYLOR[L]) * zmax2 ** L > self._eps_t:
+                L += 1
+            Z = np.empty((nc, L))
+            Z[:, 0] = 1.0
+            if L > 1:
+                Z[:, 1:] = X[:, None]
+                np.cumprod(Z[:, 1:], axis=1, out=Z[:, 1:])
+            Q = (R @ (Pc.real[:, None] * Z) + 1j * (R @ (Pc.imag[:, None] * Z))) * ((1j) ** np.arange(K))[:, None]
+        else:
+            L = 1
+            Q = (R @ Pc)[:, None] * ((1j) ** np.arange(K))[:, None]
+        b["cl"] = dict(A0=A0, wm=wm, hw=hw, Q=Q, K=K, L=L, y_ref=yr, n=nc, hi=hi)
+        return b["cl"]
+
+    def _cluster_M(self, cl, y):
+        """Q scaled for the source position y: M_kl = Q_kl a_l (y / y_hi)^{2l}."""
+        L = cl["L"]
+        if L == 1:
+            return cl["Q"]
+        r2 = (y / cl["y_ref"]) ** 2
+        return cl["Q"] * (_J0_TAYLOR[:L] * r2 ** np.arange(L))[None, :]
+
+    def _cluster_sum(self, cl, y, wb):
+        """Cluster part of the head sum at the frequencies wb (one y)."""
+        if cl is None:
+            return 0.0
+        M = self._cluster_M(cl, y)
+        K, L = cl["K"], cl["L"]
+        tau = (wb - cl["wm"]) / cl["hw"] if cl["hw"] > 0 else np.zeros_like(wb)
+        Vt = np.empty((wb.size, K))
+        Vt[:, 0] = 1.0
+        if K > 1:
+            Vt[:, 1:] = tau[:, None]
+            np.cumprod(Vt[:, 1:], axis=1, out=Vt[:, 1:])
+        R = Vt @ M                                           # (m, L)
+        if L > 1:
+            s2 = (wb / cl["hi"]) ** 2
+            acc = R[:, L - 1]
+            for l in range(L - 2, -1, -1):
+                acc = acc * s2 + R[:, l]
+        else:
+            acc = R[:, 0]
+        return np.exp(1j * wb * cl["A0"]) * acc
+
+    def _cluster_profile(self, cl, w, ys):
+        """Cluster part of the head sum at one frequency w for many source positions ys."""
+        if cl is None:
+            return 0.0
+        K, L = cl["K"], cl["L"]
+        tau = (w - cl["wm"]) / cl["hw"] if cl["hw"] > 0 else 0.0
+        c = (tau ** np.arange(K)) @ cl["Q"]                  # (L,)
+        if L == 1:
+            return np.exp(1j * w * cl["A0"]) * c[0] * np.ones(ys.shape)
+        c = c * _J0_TAYLOR[:L] * ((w / cl["hi"]) ** 2) ** np.arange(L)
+        r2 = (ys / cl["y_ref"]) ** 2
+        acc = np.full(ys.shape, c[L - 1], dtype=complex)
+        for l in range(L - 2, -1, -1):
+            acc = acc * r2 + c[l]
+        return np.exp(1j * w * cl["A0"]) * acc
 
     def _bary(self, b, wb):
         """
@@ -825,6 +1231,8 @@ class Solver1D:
         """
         # The transforms here are small (thousands of nodes): one thread is faster and steadier than
         # several, so threads=None means 1. A forked process must use 1 (OpenMP deadlock otherwise).
+        # (Python threads over the frequency bands were tried: slower, the sums are many small numpy
+        # operations and the threads mostly wait for the GIL.)
         if self.threads is None:
             return 1
         if self.threads > 1 and (_forked() or mp.current_process().daemon):
@@ -887,8 +1295,8 @@ class Solver1D:
 
     def _band_index(self, wp):
         idx = np.full(wp.size, -1)
-        for i, b in enumerate(self.bands):
-            sel = (idx < 0) & (wp >= b["lo"] * (1 - 1e-12)) & (wp <= b["hi"] * (1 + 1e-12))
+        for i, (lo, hi) in enumerate(self.bands.lohi):
+            sel = (idx < 0) & (wp >= lo * (1 - 1e-12)) & (wp <= hi * (1 + 1e-12))
             idx[sel] = i
         return idx
 
@@ -921,17 +1329,32 @@ class Solver1D:
             out[:, s:s + step] = C @ np.exp(1j * np.outer(src, wb[s:s + step]))
         return out
 
-    def _head_fast(self, b, y, wb):
-        """sum_j W_j J0(w y x_j) exp(i w A_j) for many w in one band (Taylor + Hankel/Chebyshev + NUFFT)."""
+    def _h_cached(self, bi, y, big):
+        """W_j h(wc y x_j) for the band's non-small per-frequency nodes at its Chebyshev frequencies wc
+        (cached per band for the last source position)."""
+        hit = self._hcache.get(bi)
+        if hit is not None and hit[0] == y:
+            return hit[1]
+        b = self.bands[bi]
+        H = _h_env(b["wc"][:, None] * (y * b["x"][big])[None, :]) * b["W"][big][None, :]
+        self._hcache[bi] = (y, H)
+        return H
+
+    def _head_fast(self, bi, y, wb):
+        """sum_j W_j J0(w y x_j) exp(i w A_j) over the band's per-frequency nodes, many w
+        (Taylor + Hankel/Chebyshev + NUFFT)."""
+        b = self.bands[bi]
         x, W, A, hi = b["x"], b["W"], b["A"], b["hi"]
         out = np.zeros(wb.size, dtype=complex)
+        if x.size == 0:
+            return out
         s = hi * y * x                                       # largest w y x of each node in the band
         small = s <= self.z_small
         if small.any():                                      # J0 = sum_k a_k (w/hi)^2k s^2k
             ss2 = s[small] ** 2
             smax2 = ss2.max()
             K = 1
-            while K < _J0_TAYLOR.size and abs(_J0_TAYLOR[K]) * smax2 ** K > 1e-17:
+            while K < _J0_TAYLOR.size and abs(_J0_TAYLOR[K]) * smax2 ** K > self._eps_t:
                 K += 1
             C = _J0_TAYLOR[:K, None] * ss2[None, :] ** np.arange(K)[:, None] * W[small][None, :]
             R = self._nufft(A[small], C, wb)
@@ -942,29 +1365,93 @@ class Solver1D:
             out += acc
         if not small.all():                                  # J0 = [h e^{iz} + conj(h) e^{-iz}] / 2
             big = ~small
-            xl, Wl, Al = x[big], W[big], A[big]
-            H = _h_env(b["wc"][:, None] * (y * xl)[None, :]) * Wl[None, :]
+            xl, Al = x[big], A[big]
+            H = self._h_cached(bi, y, big)
             R = self._nufft(np.concatenate([Al + y * xl, Al - y * xl]), np.concatenate([H, H.conj()], axis=1), wb)
             out += 0.5 * np.einsum("mc,cm->m", self._bary(b, wb), R)
         return out
 
+    def _head_dsum(self, b, y, wb, all_nodes=False):
+        """The same sum by direct summation (few w): exp(i w A_j) by cos/sin; J0 by its Taylor series in
+        (w/hi)^2 for the nodes with hi y x_j <= z_small (no Bessel calls), by scipy's j0 for the others.
+        all_nodes: over all head nodes of the band (no cluster) instead of the per-frequency ones."""
+        x, W, A, hi = (b["xa"], b["Wa"], b["Aa"], b["hi"]) if all_nodes else (b["x"], b["W"], b["A"], b["hi"])
+        out = np.zeros(wb.size, dtype=complex)
+        if x.size == 0 or wb.size == 0:
+            return out
+        s = hi * y * x
+        small = s <= self.z_small
+        big = ~small
+        if small.any():
+            ss2 = s[small] ** 2
+            smax2 = ss2.max()
+            L = 1
+            while L < _J0_TAYLOR.size and abs(_J0_TAYLOR[L]) * smax2 ** L > self._eps_t:
+                L += 1
+            Cs = (W[small][:, None] * ss2[:, None] ** np.arange(L)[None, :]) * _J0_TAYLOR[None, :L]   # (ns, L)
+            As = A[small]
+        if big.any():
+            Ab, yxb, Wb = A[big], y * x[big], W[big]
+        step = max(1, 1_000_000 // x.size)
+        for s0 in range(0, wb.size, step):
+            wk = wb[s0:s0 + step]
+            if small.any():
+                ph = np.multiply.outer(wk, As)
+                E = np.empty(ph.shape, dtype=complex)
+                np.cos(ph, out=E.real)
+                np.sin(ph, out=E.imag)
+                R = E @ Cs                                   # (m, L)
+                q = (wk / hi) ** 2
+                acc = R[:, L - 1]
+                for l in range(L - 2, -1, -1):
+                    acc = acc * q + R[:, l]
+                out[s0:s0 + step] += acc
+            if big.any():
+                ph = np.multiply.outer(wk, Ab)
+                J = j0(np.multiply.outer(wk, yxb))
+                J *= Wb
+                out[s0:s0 + step] += np.einsum("mn,mn->m", J, np.cos(ph)) + 1j * np.einsum("mn,mn->m", J, np.sin(ph))
+        return out
+
+    def _tail_cached(self, bi, y):
+        hit = self._tcache.get(bi)
+        return hit is not None and hit[0] == y
+
+    def _tail_prepare(self, bis, y):
+        """Tail sums at the Chebyshev frequencies of the bands bis for source position y (cached per band).
+        The complex Bessel functions of all bands are evaluated in one call."""
+        todo = [bi for bi in bis if not self._tail_cached(bi, y)]
+        if not todo:
+            return
+        zj, zh = [], []
+        for bi in todo:
+            b = self.bands[bi]
+            if y == 0:
+                self._tcache[bi] = (y, (0, self._tail_E(b).sum(axis=1)))
+            elif b["hi"] * y * b["xb"] <= self.z_small:
+                zj.append(bi)
+            else:
+                zh.append(bi)
+        if zj:
+            zs = [self.bands[bi]["wc"][:, None] * y * self.bands[bi]["xt"] for bi in zj]
+            J = np.split(_j0_c(np.concatenate([z.ravel() for z in zs]), *self._zc), np.cumsum([z.size for z in zs])[:-1])
+            for bi, z, Jb in zip(zj, zs, J):
+                self._tcache[bi] = (y, (0, np.sum(self._tail_E(self.bands[bi]) * Jb.reshape(z.shape), axis=1)))
+        if zh:
+            zs = [self.bands[bi]["wc"][:, None] * y * self.bands[bi]["xt"] for bi in zh]
+            cut = np.cumsum([z.size for z in zs])[:-1]
+            h1, h2 = _hankel_e_c(np.concatenate([z.ravel() for z in zs]), *self._zc)
+            for bi, z, a1, a2 in zip(zh, zs, np.split(h1, cut), np.split(h2, cut)):
+                b = self.bands[bi]
+                ph = np.exp(1j * b["wc"][:, None] * y * b["dx"])
+                E = self._tail_E(b)
+                self._tcache[bi] = (y, (1, np.sum(E * a1.reshape(z.shape) * ph, axis=1),
+                                        np.sum(E * a2.reshape(z.shape) / ph, axis=1)))
+
     def _tail_values(self, bi, y):
         """Tail sums at the Chebyshev frequencies of band bi for source position y (cached per band)."""
-        hit = self._tcache.get(bi)
-        if hit is not None and hit[0] == y:
-            return hit[1]
-        b = self.bands[bi]
-        wc, E = b["wc"][:, None], b["E"]
-        if y == 0:
-            val = (0, E.sum(axis=1))
-        elif b["hi"] * y * b["xb"] <= self.z_small:
-            val = (0, np.sum(E * jv(0, wc * y * b["xt"]), axis=1))
-        else:
-            z = wc * y * b["xt"]
-            val = (1, np.sum(E * hankel1e(0, z) * np.exp(1j * wc * y * b["dx"]), axis=1),
-                   np.sum(E * hankel2e(0, z) * np.exp(-1j * wc * y * b["dx"]), axis=1))
-        self._tcache[bi] = (y, val)
-        return val
+        self._tail_prepare([bi], y)
+        return self._tcache[bi][1]
 
     def _tail_fast(self, bi, y, wb):
         b = self.bands[bi]
@@ -976,65 +1463,56 @@ class Solver1D:
         ph = np.exp(1j * wb * y * b["xb"])
         return pre * 0.5 * (ph * (B @ val[1]) + (B @ val[2]) / ph)
 
-    def _tail_direct(self, b, y, w):
-        """Tail at one w for an array of source positions y (direct; complex Bessel J0).
-
-        To be tested!!!!!
-        Use with Caution!!!
-        
-        """
-        t = self.LX / (b["al"] * w)
-        xt = np.sqrt(2 * (b["ub"] + 1j * t))
-        E = self.LW * np.exp(self.LX * (1 - 1 / b["al"]) - 1j * w * (self.lens(xt) - b["psib"]))
-        S = jv(0, w * np.multiply.outer(np.atleast_1d(y), xt)) @ E
-        return 1j / (b["al"] * w) * np.exp(1j * w * (b["ub"] - b["psib"])) * S
-
-    def _head_direct(self, b, y, w):
-        """Head at one w for an array of source positions y (direct).
-
-        To be tested!!!!!
-        Use with Caution!!!
-        
-        """
-        y = np.atleast_1d(y)
-        c = b["W"] * np.exp(1j * w * b["A"])
-        out = np.empty(y.size, dtype=complex)
-        step = max(1, 2_000_000 // b["x"].size)
-        for s in range(0, y.size, step):
-            out[s:s + step] = j0(w * np.multiply.outer(y[s:s + step], b["x"])) @ c
-        return out
-
-    def _spectrum_direct(self, b, y, wb):
-        """
-        Head + tail at the frequencies wb of band b for one y, by direct sums (few frequencies).
-        Use of Gauss Legendre and Gauss Laguerre quadrature here
-        
-        """
-        x, W, A = b["x"], b["W"], b["A"]
-        head = np.empty(wb.size, dtype=complex)
-        step = max(1, 1_000_000 // x.size)
-        for s in range(0, wb.size, step):
-            wk = wb[s:s + step, None]
-            head[s:s + step] = (j0(wk * (y * x)[None, :]) * np.exp(1j * wk * A[None, :])) @ W
+    def _tail_exact(self, b, y, wb):
+        """Tail at each frequency of wb (one y), with the Laguerre points of that frequency (few w)."""
         t = self.LX[None, :] / (b["al"] * wb[:, None])
         xt = np.sqrt(2 * (b["ub"] + 1j * t))
         E = self.LW[None, :] * np.exp(self.LX[None, :] * (1 - 1 / b["al"]) - 1j * wb[:, None] * (self.lens(xt) - b["psib"]))
-        S = np.sum(E * jv(0, wb[:, None] * y * xt), axis=1)
-        return head + 1j / (b["al"] * wb) * np.exp(1j * wb * (b["ub"] - b["psib"])) * S
+        S = np.sum(E * _j0_c(wb[:, None] * y * xt, *self._zc), axis=1) if y > 0 else E.sum(axis=1)
+        return 1j / (b["al"] * wb) * np.exp(1j * wb * (b["ub"] - b["psib"])) * S
 
-    def _fast_pays(self, b, y, m):
-        """Cost model (seconds, this design's measured constants): direct sums vs Hankel/Chebyshev + NUFFT."""
+    def _tail_direct(self, b, y, w):
+        """Tail at one w for an array of source positions y (direct; complex Bessel J0)."""
+        t = self.LX / (b["al"] * w)
+        xt = np.sqrt(2 * (b["ub"] + 1j * t))
+        E = self.LW * np.exp(self.LX * (1 - 1 / b["al"]) - 1j * w * (self.lens(xt) - b["psib"]))
+        S = _j0_c(w * np.multiply.outer(np.atleast_1d(y), xt), *self._zc) @ E
+        return 1j / (b["al"] * w) * np.exp(1j * w * (b["ub"] - b["psib"])) * S
+
+    def _head_direct(self, b, y, w):
+        """Head at one w for an array of source positions y: cluster polynomial + direct sums."""
+        y = np.atleast_1d(y)
+        out = np.zeros(y.size, dtype=complex) + self._cluster_profile(self._cluster(b), w, y)
+        if b["x"].size == 0:
+            return out
+        c = b["W"] * np.exp(1j * w * b["A"])
+        step = max(1, 2_000_000 // b["x"].size)
+        for s in range(0, y.size, step):
+            out[s:s + step] += j0(w * np.multiply.outer(y[s:s + step], b["x"])) @ c
+        return out
+
+    # cost model (seconds) for the per-frequency nodes of a band: direct sums vs NUFFT. Constants measured
+    # on a Skylake-X core (numpy 2.3, FINUFFT 2.5); only their ratios matter for the choice.
+    _C_TRIG, _C_J0 = 4.0e-8, 3.5e-8           # cos+sin per (w, node); scipy j0 per (w, node)
+    _C_NU, _C_NU0 = 5.0e-8, 3.0e-4            # FINUFFT type 3 per point per row (eps 1e-14); per call
+    _C_HENV = 8.0e-8                          # Hankel envelope per (Chebyshev frequency, node)
+
+    def _fast_pays(self, bi, y, m):
+        """True if the NUFFT path is predicted to be faster than direct sums for m frequencies."""
+        b = self.bands[bi]
         if finufft is None or m < 4:
             return False
         x = b["x"]
-        z_hi, z_lo = b["hi"] * y * x, b["lo"] * y * x
-        n_small = int(np.count_nonzero(z_hi <= self.z_small))
-        n_far = int(np.count_nonzero(z_lo >= _Z_ASYM))
-        n_mid = x.size - n_small - n_far
+        if x.size == 0:
+            return False
+        small = b["hi"] * y * x <= self.z_small
+        ns = int(np.count_nonzero(small))
+        nb = x.size - ns
         nc = b["cx"].size
-        direct = m * (6e-8 * x.size + 2e-5)
-        fast = (4e-3 + nc * (1.3e-7 * n_mid + 5e-8 * n_far)
-                + 3.5e-8 * (10 * n_small + 2 * nc * (n_mid + n_far)) + 3e-7 * m)
+        direct = m * (self._C_TRIG * x.size + self._C_J0 * nb)
+        c_nu = self._C_NU * (0.6 + 0.4 * min(1.0, np.log10(1.0 / self.nufft_eps) / 14))
+        fast = (self._C_NU0 * ((ns > 0) + (nb > 0)) + c_nu * (10 * (ns + m) * (ns > 0) + nc * (2 * nb + m) * (nb > 0))
+                + (0.0 if (self._hcache.get(bi, (None,))[0] == y) else self._C_HENV * nc * nb))
         return fast < direct
 
     #  To be used by the user
@@ -1051,24 +1529,42 @@ class Solver1D:
             return F
         self._check_w(wp)
         mode = self.interpolate if interpolate is None else interpolate
-        if mode and wp.size >= 64:
-            Fi = self._spectrum_interp(wp, y, auto=(mode == "auto"))
-            if Fi is not None:
-                F[pos] = Fi
-                return F
-        F[pos] = self._spectrum_exact(wp, y)
+        with _blas_single():
+            if mode and wp.size >= 64:
+                Fi = self._spectrum_interp(wp, y, auto=(mode == "auto"))
+                if Fi is not None:
+                    F[pos] = Fi
+                    return F
+            F[pos] = self._spectrum_exact(wp, y)
         return F
 
     def _spectrum_exact(self, wp, y):
         total = np.empty(wp.size, dtype=complex)
         idx = self._band_index(wp)
-        for bi in np.unique(idx):
-            sel = idx == bi
+        used, counts = np.unique(idx, return_counts=True)
+        # tails by Chebyshev interpolation in ln w (n_cheb tail sums per band, cached per y), unless only a
+        # few frequencies of a band without cached values are needed
+        cheb = {int(bi) for bi, c in zip(used, counts)
+                if 2 * c >= self.n_cheb or self._tail_cached(bi, y)}
+        self._tail_prepare(sorted(cheb), y)
+
+        def band(bi):
+            sel = np.nonzero(idx == bi)[0]
             wb, b = wp[sel], self.bands[bi]
-            if self._fast_pays(b, y, wb.size):
-                total[sel] = self._head_fast(b, y, wb) + self._tail_fast(bi, y, wb)
+            if b["nc"] and b["cl"] is None and wb.size < self._M_CL:
+                head = self._head_dsum(b, y, wb, all_nodes=True)     # few w: the cluster does not pay
             else:
-                total[sel] = self._spectrum_direct(b, y, wb)
+                head = self._cluster_sum(self._cluster(b), y, wb)
+                if self._fast_pays(bi, y, wb.size):
+                    head = head + self._head_fast(bi, y, wb)
+                else:
+                    head = head + self._head_dsum(b, y, wb)
+            tail = self._tail_fast(bi, y, wb) if bi in cheb else self._tail_exact(b, y, wb)
+            return sel, head + tail
+
+        for bi in used:
+            sel, v = band(bi)
+            total[sel] = v
         return -1j * wp * np.exp(0.5j * wp * y * y) * total
 
    #optional interpolation in w
@@ -1078,26 +1574,30 @@ class Solver1D:
         F(w) oscillates in w only through exp(i w T) at these times (plus smooth terms)."""
         if y in self._tdcache:
             return self._tdcache[y]
-        lens = self.lens
-        xmax = 1.5 * max(self.xb0, 2 * y + 2)
-        x = np.unique(np.concatenate([np.geomspace(1e-6, 1.0, 3000), np.linspace(1.0, xmax, 6000)]))
-        with np.errstate(all="ignore"):
-            g = x - lens.dpsi(x)                             # lens equation: g(|s|) = +-y
-            ps = lens.real(x)
-        Ts = []
-        for sgn in (1.0, -1.0):                              # image side (s > 0) and opposite side
-            T = 0.5 * (x - sgn * y) ** 2 - ps
-            d = g - sgn * y
-            ok = np.isfinite(d) & np.isfinite(T)
-            roots = np.nonzero(ok[:-1] & ok[1:] & (np.sign(d[:-1]) != np.sign(d[1:])))[0]
-            Ts += list(T[roots]) + list(T[roots + 1])
-            dg = np.diff(g)                                  # merging points: extrema of g
+        if self._tdgrid is None:                             # y-independent part, once per solver
+            lens = self.lens
+            xmax = 1.5 * max(self.xb0, 2 * self.y_hi + 2)
+            x = np.unique(np.concatenate([np.geomspace(1e-6, 1.0, 600), np.linspace(1.0, xmax, 1200)]))
+            with np.errstate(all="ignore"):
+                ps = lens.real(x)
+                g = x - np.gradient(ps, x)                   # lens equation: g(|s|) = +-y
+                p0 = lens.real(np.array([1e-12, 1e-9]))
+            dg = np.diff(g)                                  # merging points (caustics): extrema of g
             ext = np.nonzero(np.isfinite(dg[:-1]) & np.isfinite(dg[1:]) & (np.sign(dg[:-1]) != np.sign(dg[1:])))[0] + 1
-            Ts += list(T[ext][np.isfinite(T[ext])])
+            core = p0[0] if (np.all(np.isfinite(p0)) and abs(p0[0] - p0[1]) < 1e-6 * (1 + abs(p0[0]))) else None
+            self._tdgrid = (x, ps, g, ext, core)
+        x, ps, g, ext, core = self._tdgrid
+        Ts = []
         with np.errstate(all="ignore"):
-            p0 = lens.real(np.array([1e-12, 1e-9]))
-        if np.all(np.isfinite(p0)) and abs(p0[0] - p0[1]) < 1e-6 * (1 + abs(p0[0])):
-            Ts.append(0.5 * y * y - p0[0])                   # cusp / core at the centre
+            for sgn in (1.0, -1.0):                          # image side (s > 0) and opposite side
+                T = 0.5 * (x - sgn * y) ** 2 - ps
+                d = g - sgn * y
+                ok = np.isfinite(d) & np.isfinite(T)
+                roots = np.nonzero(ok[:-1] & ok[1:] & (np.sign(d[:-1]) != np.sign(d[1:])))[0]
+                Ts += list(T[roots]) + list(T[roots + 1])
+                Ts += list(T[ext][np.isfinite(T[ext])])
+        if core is not None:
+            Ts.append(0.5 * y * y - core)                    # cusp / core at the centre
         if not Ts:
             Ts = [0.5 * y * y - ps[0]]
         out = (float(min(Ts)), float(max(Ts)))
@@ -1106,80 +1606,130 @@ class Solver1D:
         self._tdcache[y] = out
         return out
 
-    def _interp_panels(self, w_lo, w_hi, B):
-        """Panel edges: phase B*(width) <= 10 rad and width <= left end (geometric near w = 0)."""
-        edges, a = [w_lo], w_lo
-        while a < w_hi * (1 - 1e-14):
-            h = min(10.0 / B if B > 0 else np.inf, a, w_hi - a)
-            a = a + h if w_hi - (a + h) > 1e-3 * h else w_hi
-            edges.append(a)
-        return np.array(edges)
+    _INTERP_NMAX = 64     # largest number of Chebyshev points per panel
 
-    def _spectrum_interp(self, wp, y, auto=False, n_p=24):
+    def _interp_panels(self, w_lo, w_hi, B, tol):
+        """
+        Panels [a, b <= 4a] covering [w_lo, w_hi] and the number of Chebyshev points of each, chosen from
+        the left so that each panel covers the most frequency per point. Points per panel from the bound for
+        G(w) = F(w) e^{-i w Tc}: |G| <= e^{B |Im w|} (time delays within Tc +- B), singular at w = 0
+        (_cheb_count), +2 for safety. Near w = 0 this gives geometric panels, further out panels of
+        ~B*h ~ 25 radians.
+        """
+        key = (w_lo, w_hi, round(B, 12), tol)
+        hit = self._pcache.get(key)
+        if hit is not None:
+            return hit
+        edges, npts, a = [w_lo], [], w_lo
+        lt = np.log(tol)
+        nmax = self._INTERP_NMAX
+        while a < w_hi * (1 - 1e-14):
+            # b <= 4a: the bound uses e^{B |Im w|}, which is not a bound for the continuation of F far
+            # below the real axis (e.g. poles of log-type potentials); wider panels can need more points
+            hmax = min(0.5 * (w_hi - a), 1.5 * a)
+            h = hmax * 2.0 ** (-np.arange(0, 48) / 2.0)
+            n = _cheb_count(B * h, (a + h) / h, lt) + 1
+            score = np.where(n <= nmax, 2 * h / n, -1.0)
+            k = int(np.argmax(score))
+            if score[k] <= 0:
+                k = h.size - 1
+            b = min(w_hi, a + 2 * h[k])
+            if w_hi - b < 1e-3 * (b - a):
+                b = w_hi
+            edges.append(b)
+            npts.append(int(min(n[k], nmax)) if np.isfinite(n[k]) else nmax)
+            a = b
+        out = (np.array(edges), np.array(npts, dtype=int))
+        if len(self._pcache) > 64:
+            self._pcache.clear()
+        self._pcache[key] = out
+        return out
+
+    _CHECK_T = np.array([0.985, 0.45, -0.6, -0.97])         # check points per panel (panel coordinate)
+
+    def _spectrum_interp(self, wp, y, auto=False):
         """
         F at the frequencies wp by Chebyshev interpolation on panels, or None if not worth it/failed.
+        Panels and points per panel from _interp_panels (error bound). Each panel's interpolant is
+        checked against exact values at four frequencies of the panel (computed in the same pass as the
+        nodes); a panel whose error exceeds interp_tol/3 (the largest error between the check points can
+        be ~3x larger) is split in two halves with the same number of points each, up to 3 times.
 
         Tested and keepig it here,becoz its faster than splines from scipy. And also accurate
-
-        
         """
         T_lo, T_hi = self._time_delay_range(y)
         Tc = 0.5 * (T_lo + T_hi)
-        B = 0.5 * (T_hi - T_lo) * 1.2 + 0.5                 # half bandwidth of F e^{-i w Tc}, with margin
+        B = 0.5 * (T_hi - T_lo) * 1.05 + 0.25               # half bandwidth of F e^{-i w Tc}, with margin
         w_lo, w_hi = wp.min(), wp.max()
-        xc = _cheb_points(n_p)
-        for attempt in range(4):
-            edges = self._interp_panels(w_lo, w_hi, B)
-            n_nodes = (edges.size - 1) * n_p
-            if (auto and wp.size < max(4000, 3 * n_nodes)) or n_nodes >= wp.size:
-                return None                                  # exact is cheaper
-            mid, half = 0.5 * (edges[1:] + edges[:-1]), 0.5 * (edges[1:] - edges[:-1])
-            wn = (mid[:, None] + half[:, None] * xc[None, :]).ravel()
-            G = (self._spectrum_exact(wn, y) * np.exp(-1j * wn * Tc)).reshape(-1, n_p)
-            F = self._interp_eval(wp, edges, G, xc) * np.exp(1j * wp * Tc)
-            # check at a few frequencies where interpolation errors peak (near panel ends)
-            k = np.unique(np.linspace(0, edges.size - 2, min(6, edges.size - 1)).astype(int))
-            wt = np.clip(np.concatenate([mid[k] + 0.985 * half[k], mid[k] - 0.6 * half[k]]), w_lo, w_hi)
-            Ft = self._spectrum_exact(wt, y)
-            err = np.max(np.abs(self._interp_eval(wt, edges, G, xc) * np.exp(1j * wt * Tc) - Ft) / np.maximum(1, np.abs(Ft)))
-            if err <= self.interp_tol:
-                return F
-            B *= 2.0                                         # unexpected structure: finer panels
-        _warn_once("interp", f"interpolation in w did not reach interp_tol={self.interp_tol:g}; computing all frequencies")
-        return None
+        edges, npts = self._interp_panels(w_lo, w_hi, B, 0.1 * self.interp_tol)
+        if (auto and wp.size < max(4000, 3 * int(npts.sum()))) or int(npts.sum()) >= wp.size:
+            return None                                      # exact is cheaper
+        todo = [(edges[p], edges[p + 1], int(npts[p])) for p in range(npts.size)]
+        done = []                                            # (a, b, values at the n Chebyshev points)
+        tc = self._CHECK_T
+        for rnd in range(4):
+            if sum(n for _, _, n in todo) + sum(g.size for _, _, g in done) >= wp.size:
+                return None                                  # refinement made exact cheaper
+            wn = [0.5 * (a + b) + 0.5 * (b - a) * _cheb_points(n) for a, b, n in todo]
+            wt = [0.5 * (a + b) + 0.5 * (b - a) * tc for a, b, _ in todo]
+            wall = np.concatenate(wn + wt)
+            vals = self._spectrum_exact(wall, y)
+            ns = np.cumsum([w.size for w in wn])
+            Gs = np.split(vals[:ns[-1]] * np.exp(-1j * wall[:ns[-1]] * Tc), ns[:-1])
+            Ft = vals[ns[-1]:].reshape(len(todo), tc.size)
+            nxt = []
+            for (a, b, n), G, w_t, F_t in zip(todo, Gs, wt, Ft):
+                Fi = self._interp_eval(w_t, np.array([a, b]), [G]) * np.exp(1j * w_t * Tc)
+                err = np.max(np.abs(Fi - F_t) / np.maximum(1, np.abs(F_t)))
+                if err <= self.interp_tol / 3 or rnd == 3:
+                    done.append((a, b, G))
+                    if err > self.interp_tol:
+                        _warn_once("interp", f"interpolation in w did not reach interp_tol={self.interp_tol:g}; computing all frequencies")
+                        return None
+                else:
+                    m = 0.5 * (a + b)
+                    nxt += [(a, m, n), (m, b, n)]
+            todo = nxt
+            if not todo:
+                break
+        done.sort(key=lambda t: t[0])
+        edges = np.array([a for a, _, _ in done] + [done[-1][1]])
+        return self._interp_eval(wp, edges, [g for _, _, g in done]) * np.exp(1j * wp * Tc)
 
-    @staticmethod
-    def _interp_eval(w, edges, G, xc):
-        """Evaluate the panel-wise Chebyshev interpolant (values G[panel, node] at the points xc) at w:
-        Chebyshev coefficients per panel, then T_k(t) by recurrence on the sorted targets of each panel."""
-        n = xc.size
-        Tm = np.cos(np.outer(np.arange(n), np.pi * (np.arange(n) + 0.5) / n))
-        coef = (2.0 / n) * G @ Tm.T
-        coef[:, 0] *= 0.5
-        cr, ci = np.ascontiguousarray(coef.real.T), np.ascontiguousarray(coef.imag.T)   # (n, panels)
-        order = None if np.all(w[1:] >= w[:-1]) else np.argsort(w, kind="stable")
-        ws = w if order is None else w[order]
-        cut = np.searchsorted(ws, edges[1:-1], side="right")
-        bounds = np.concatenate([[0], cut, [ws.size]])
-        res = np.empty(ws.size, dtype=complex)
-        for p in range(edges.size - 1):
-            i0, i1 = bounds[p], bounds[p + 1]
-            if i1 <= i0:
+    _BARY_W = {}
+
+    @classmethod
+    def _interp_eval(cls, w, edges, Gp):
+        """Evaluate the panel-wise Chebyshev interpolant (values Gp[panel] at the Chebyshev points of the
+        first kind) at w by the barycentric formula (Berrut & Trefethen 2004), panel by panel."""
+        out = np.empty(w.size, dtype=complex)
+        p = np.clip(np.searchsorted(edges, w, side="right") - 1, 0, len(Gp) - 1)
+        order = np.argsort(p, kind="stable")
+        bounds = np.searchsorted(p[order], np.arange(len(Gp) + 1))
+        for q, G in enumerate(Gp):
+            sel = order[bounds[q]:bounds[q + 1]]
+            if sel.size == 0:
                 continue
-            t = (2 * ws[i0:i1] - (edges[p] + edges[p + 1])) / (edges[p + 1] - edges[p])
-            V = np.empty((n, i1 - i0))                       # V[k] = T_k(t), rows contiguous
-            V[0] = 1.0
-            V[1] = t
-            t2 = 2 * t
-            for k in range(2, n):
-                np.multiply(t2, V[k - 1], out=V[k])
-                V[k] -= V[k - 2]
-            res.real[i0:i1] = cr[:, p] @ V
-            res.imag[i0:i1] = ci[:, p] @ V
-        if order is None:
-            return res
-        out = np.empty_like(res)
-        out[order] = res
+            n = G.size
+            bw = cls._BARY_W.get(n)
+            if bw is None:
+                k = np.arange(n)
+                bw = cls._BARY_W[n] = (_cheb_points(n), (-1.0) ** k * np.sin(np.pi * (k + 0.5) / n))
+            xc, wts = bw
+            t = (2 * w[sel] - (edges[q] + edges[q + 1])) / (edges[q + 1] - edges[q])
+            d = np.subtract.outer(t, xc)
+            hit = d == 0
+            if hit.any():
+                d[hit] = 1.0
+            np.divide(wts, d, out=d)                         # barycentric terms (real)
+            den = d.sum(axis=1)
+            v = np.empty(t.size, dtype=complex)
+            v.real = (d @ G.real) / den
+            v.imag = (d @ G.imag) / den
+            if hit.any():
+                r, c = np.nonzero(hit)
+                v[r] = G[c]
+            out[sel] = v
         return out
 
     many = spectrum
@@ -1211,7 +1761,8 @@ class Solver1D:
             return np.ones(shape, dtype=complex)
         self._check_w(np.array([w]))
         b = self.bands[self._band_index(np.array([w]))[0]]
-        F = -1j * w * np.exp(0.5j * w * yr * yr) * (self._head_direct(b, yr, w) + self._tail_direct(b, yr, w))
+        with _blas_single():
+            F = -1j * w * np.exp(0.5j * w * yr * yr) * (self._head_direct(b, yr, w) + self._tail_direct(b, yr, w))
         return F.reshape(shape)
 
     def evaluate(self, ws, ys):
@@ -1275,8 +1826,9 @@ class Solver1D:
 
 
 # Lighter settings for parameter estimation: fewer nodes and a looser FINUFFT tolerance, accuracy ~1e-8
+# (n_cheb=13 with band_ratio=8 is the former n_cheb=10 with band_ratio=4; interp_tol becomes 1e-7)
 # in F (far below detector noise). Usage: Solver1D(lens, y, wmin, wmax, y_radius=R, **PE_SETTINGS)
-PE_SETTINGS = dict(ngl=24, nlag=24, n_cheb=10, nufft_eps=1e-9)
+PE_SETTINGS = dict(ngl=24, nlag=24, n_cheb=13, nufft_eps=1e-9)
 
 
 # ================================================================== convenience functions
@@ -1429,4 +1981,3 @@ def amplification_grid(ws, ys, lens, **kw):
     yc, R = _y_range(ys)
     with Solver1D(lens, yc, wp.min(), wp.max(), y_radius=R, **kw) as s:
         return s.evaluate(ws, ys)
-

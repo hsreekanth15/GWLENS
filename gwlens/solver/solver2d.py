@@ -1,14 +1,11 @@
-
 import os
-import time
-import mmap
 import signal
 import weakref
 import warnings
 import multiprocessing as mp
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import partial
 import numpy as np
 from scipy.special import roots_legendre, roots_laguerre, expit
@@ -17,14 +14,26 @@ try:
 except ImportError:
     finufft = None
 try:
-    import numexpr as ne                # optional: multithreaded elementwise work
+    import numexpr as ne                # optional: faster elementwise work
 except ImportError:
     ne = None
+try:
+    from threadpoolctl import ThreadpoolController    # optional: keeps BLAS on one thread in the sums
+except ImportError:
+    ThreadpoolController = None
 
 _GL, _LAG = {}, {}
 
 
 # ================================================================== parallel helpers
+# Threads and processes
+#  * Building a solver: psi is evaluated on the grid by up to n_workers THREADS (numpy releases the
+#    GIL in its elementwise loops, so no processes, forking or shared memory are needed).
+#  * evaluate(ws, ys) with many rows: rows go to n_workers forked PROCESSES (one thread each).
+#  * One transform (a spectrum or a map): FINUFFT and numexpr threads (if threads > 1), but only where
+#    the arrays are large enough to gain (>= _PTS_PER_THREAD points per thread); BLAS stays on one.
+#    Several thread pools (OpenMP, numexpr, BLAS) alternating on the same cores is what made
+#    threads=None slower than one thread.
 # Processes are started with 'fork', so workers inherit the lens (which may hold lambdas) and the
 # finished grid without any pickling. Two rules keep this safe:
 #  * a forked process must not start OpenMP threads if its parent already did (GNU libgomp then
@@ -33,6 +42,8 @@ _GL, _LAG = {}, {}
 _IMPORT_PID = os.getpid()
 _NE_SET = {}
 _WORKER = {}
+_TPC = {}
+_PTS_PER_THREAD = 250_000          # a FINUFFT / numexpr thread pays off from ~this many points
 
 
 def available_cores():
@@ -62,18 +73,25 @@ def _fork_executor(n, initializer, initargs):
     return ProcessPoolExecutor(n, mp_context=mp.get_context("fork"), initializer=initializer, initargs=initargs)
 
 
-def _buffer(n, dtype, shared):
-    """Array of n elements; with shared=True in anonymous shared memory that forked workers write into."""
-    n = int(n)
-    if not shared or n == 0:
-        return np.empty(n, dtype=dtype)
-    return np.frombuffer(mmap.mmap(-1, n * np.dtype(dtype).itemsize), dtype=dtype, count=n)
-
-
 def _set_ne_threads(n):
     if ne is not None and _NE_SET.get(os.getpid()) != n:
         ne.set_num_threads(n)
         _NE_SET[os.getpid()] = n
+
+
+def _blas_single():
+    """Context in which BLAS runs on one thread. The matrix products of a spectrum or a map are small;
+    a multithreaded BLAS between FINUFFT calls only competes with FINUFFT's own threads."""
+    if ThreadpoolController is None:
+        return nullcontext()
+    pid = os.getpid()
+    ctl = _TPC.get(pid)
+    if ctl is None:
+        try:
+            ctl = _TPC[pid] = ThreadpoolController()
+        except Exception:
+            return nullcontext()
+    return ctl.limit(limits=1, user_api="blas")
 
 
 def _worker_common():
@@ -81,67 +99,16 @@ def _worker_common():
     _set_ne_threads(1)
 
 
-def _init_fn_worker(fn):
-    _worker_common()
-    _WORKER["fn"] = fn
-
-
-def _call_fn(i):
-    return _WORKER["fn"](i)
-
-
-def _pmap(fn, n, nproc):
-    """[fn(0), ..., fn(n-1)] computed by nproc forked processes. fn may be a closure (it is inherited,
-    not pickled); its return values are pickled back, so keep them small or write to _buffer arrays."""
-    if nproc <= 1:
+def _thread_map(fn, n, nthreads):
+    """[fn(0), ..., fn(n-1)] on up to nthreads threads (order kept). fn must release the GIL for most
+    of its work (numpy elementwise operations on large arrays do)."""
+    if nthreads <= 1 or n <= 1:
         return [fn(i) for i in range(n)]
-    ex = _fork_executor(nproc, _init_fn_worker, (fn,))
-    try:
-        with _quiet_fork():
-            return list(ex.map(_call_fn, range(n)))
-    finally:
-        ex.shutdown(wait=True, cancel_futures=True)
+    with ThreadPoolExecutor(min(nthreads, n)) as ex:
+        return list(ex.map(fn, range(n)))
 
 
-# Cost model for deciding whether processes pay off (deliberately pessimistic, so that n_workers > 1
-# is never noticeably slower than serial): starting a worker costs _SPAWN_COST seconds, and each extra
-# process adds _PAR_EFF of a core (memory bandwidth and turbo clocks are shared).
-_SPAWN_COST, _PAR_EFF, _MIN_GAIN = 0.02, 0.75, 0.8
 _THREAD_EFF = 0.5            # FINUFFT threads on one transform: ~half the cores' worth (assumed)
-
-
-def _choose_nproc(t_serial, n_items, pmax):
-    """Process count minimising the predicted time of t_serial seconds of work in n_items pieces."""
-    best_p, best_t = 1, t_serial
-    for p in range(2, min(pmax, n_items) + 1):
-        t = t_serial / (1 + _PAR_EFF * (p - 1)) + _SPAWN_COST * (p + 1)
-        if t < best_t:
-            best_p, best_t = p, t
-    return best_p if best_t < _MIN_GAIN * t_serial else 1
-
-
-def _adaptive_map(fn, work, pmax, calib=0.03, before_fork=None):
-    """[fn(i) for i in range(len(work))], work[i] = relative cost of item i. Items run here until
-    `calib` seconds have passed; that measured speed predicts the rest, which goes to forked processes
-    only if the cost model says it is clearly faster (before_fork(i_done) is called first).
-    Returns (results, processes used)."""
-    n, out, done, i = len(work), [], 0.0, 0
-    t0 = time.perf_counter()
-    while i < n:
-        out.append(fn(i))
-        done += work[i]
-        i += 1
-        if pmax > 1 and time.perf_counter() - t0 >= calib:
-            break
-    if i == n:
-        return out, 1
-    t_rest = (time.perf_counter() - t0) * sum(work[i:]) / max(done, 1e-300)
-    p = _choose_nproc(t_rest, n - i, pmax)
-    if p > 1:
-        if before_fork is not None:
-            before_fork(i)
-        return out + _pmap(lambda k: fn(i + k), n - i, p), p
-    return out + [fn(k) for k in range(i, n)], 1
 
 
 def _init_eval_worker(ref):
@@ -333,14 +300,62 @@ def _estimate_q_inf(lens, c):
     return float(q)
 
 
+def _split_radius(lens, c, yc0, Re, thr, xb):
+    """Smallest x_b (from the given start, steps of 10 %) with (n.(y - c) + d psi/dr)/x_b <= thr in every
+    direction for every source within Re of y; also returns the smallest decay rate 1 - P there."""
+    th = np.linspace(0, 2 * np.pi, 257)[:-1]
+    for _ in range(400):
+        g1, g2 = lens.grad(c[0] + xb * np.cos(th), c[1] + xb * np.sin(th))
+        P = np.max((np.cos(th) * (yc0[0] + g1) + np.sin(th) * (yc0[1] + g2) + Re) / xb)
+        if P <= thr:
+            return float(xb), float(1 - P)
+        xb *= 1.1
+    raise RuntimeError("could not find a split radius; is the potential growing faster than r^2/2?")
+
+
+def _region_cost(lens, c, Y, r_out, wmax, ngl, cycles, bw_factor, bw_margin, u_floor, weight=None,
+                 ang_req=None, n_oct=12, n_ang=32):
+    """Rough number of head nodes of a polar region of radius r_out about c (the same rules as
+    _plan_nodes, with psi sampled on one ring per octave). Only used to compare candidate centres."""
+    r_e = r_out * 2.0 ** -np.arange(n_oct, -1, -1)
+    th = (np.arange(n_ang) + 0.5) * 2 * np.pi / n_ang
+    R, TH = np.meshgrid(r_e, th, indexing="ij")
+    x1, x2 = c[0] + R * np.cos(TH), c[1] + R * np.sin(TH)
+    with np.errstate(all="ignore"):
+        g1, g2 = lens.grad(x1, x2)
+        G = np.hypot(g1, g2)
+        D = np.abs(R * (-np.sin(TH) * g1 + np.cos(TH) * g2))
+        ok = np.isfinite(G) & np.isfinite(D)
+        if weight is not None:
+            ok &= weight(x1, x2) != 0
+    G = np.max(np.where(ok, G, 0.0), axis=1)
+    D = np.max(np.where(ok, D, 0.0), axis=1)
+    per_piece = 2 * np.pi * cycles / wmax                      # phase per unit w in one radial piece
+    n = ngl * np.log(max(0.5 * r_e[0] ** 2 / u_floor, 1.0)) * (bw_factor * wmax * (r_e[0] * Y + D[0]) + bw_margin)
+    for k in range(1, r_e.size):
+        r_lo, r_hi = r_e[k - 1], r_e[k]
+        Gk, Dk = max(G[k - 1], G[k]), max(D[k - 1], D[k])
+        dV = 0.5 * (r_hi ** 2 - r_lo ** 2) + (Y + Gk) * (r_hi - r_lo)
+        N = bw_factor * wmax * (r_hi * Y + Dk) + bw_margin + (ang_req(r_lo, r_hi) if ang_req else 0.0)
+        n += ngl * (np.ceil(dV / per_piece) + 1) * N
+    return float(n)
+
+
 
 # ================================================================== grid building blocks
-def _probe_V1(lens, c, yc, u_floor, u_lin, u_hi, wmax, weight=None, n_ang=64):
+# Resolution of the two planning probes (they only size the grid; psi on the grid is exact). The
+# previous values (64 directions, >= 1500 + 3000 radii; 256 x 8 points per octave) cost 30-50 % of a
+# build with PE_SETTINGS and gave the same grids to within a few nodes.
+_PROBE_N_ANG, _PROBE_N_LIN, _PROBE_N_GEO = 48, 600, 1000
+_DPSI_N_ANG, _DPSI_N_R = 128, 4
+
+
+def _probe_V1(lens, c, yc, u_floor, u_lin, u_hi, wmax, weight=None, n_ang=_PROBE_N_ANG):
     """Worst-direction accumulated phase per unit w, V1(u), on a probe grid in [u_floor, u_hi].
     Dense (>= 3 points per cycle at wmax) up to u_lin, geometric everywhere."""
-    n_lin = int(max(1500, 3 * wmax * u_lin / (2 * np.pi)))
+    n_lin = int(max(_PROBE_N_LIN, 3 * wmax * u_lin / (2 * np.pi)))
     ug = np.unique(np.concatenate([np.linspace(u_floor, u_lin, n_lin),
-                                   np.geomspace(u_floor, u_hi, 3000)]))
+                                   np.geomspace(u_floor, u_hi, _PROBE_N_GEO)]))
     xg = np.sqrt(2 * ug)
     th = (np.arange(n_ang) + 0.5) * 2 * np.pi / n_ang
     dV = np.zeros(ug.size - 1)
@@ -359,7 +374,7 @@ def _probe_V1(lens, c, yc, u_floor, u_lin, u_hi, wmax, weight=None, n_ang=64):
     return ug, np.concatenate([[0.0], np.cumsum(dV)])
 
 
-def _max_dpsi_dth(lens, c, r_lo, r_hi, weight=None, n_ang=256, n_r=8):
+def _max_dpsi_dth(lens, c, r_lo, r_hi, weight=None, n_ang=_DPSI_N_ANG, n_r=_DPSI_N_R):
     """max over the annulus of |d psi / d theta| (angular derivative about c), masked by weight != 0."""
     rs = np.linspace(max(r_lo, 1e-6 * r_hi), r_hi, n_r)
     R, T = np.meshgrid(rs, (np.arange(n_ang) + 0.5) * 2 * np.pi / n_ang)
@@ -464,7 +479,13 @@ class Solver2D:
       s.map(w, Y1, Y2)        one frequency, many source positions       -> 2D non-uniform FFT
       s.evaluate(ws, ys)      table (len(ys), len(ws)); loops over whichever axis is shorter
 
-    Accuracy/tuning options (defaults are the validated ones): center, patch_frac, patch_max, s0,
+    center        centre of the polar coordinates. 'auto' (default): the cheapest of the singular points
+                  and their centroid, judged by a quick estimate of the grid size (often the centroid
+                  for several similar lenses: |y - c| and the split radius are then small, giving
+                  2-3x fewer nodes). 'nearest': the singular point nearest to y (the old default).
+                  Or a point (x1, x2). info['center_costs'] lists the estimates.
+
+    Accuracy/tuning options (defaults are the validated ones): patch_frac, patch_max, s0,
     cycles, ngl, nlag, n_cheb, theta_factor (2 = convergence test), bw_factor, bw_margin,
     xb_min (move split out = convergence test), xb_base, n_transition, pou_density,
     map_ext (grid built for radius map_ext*y_radius so maps are valid up to y_radius; use 1.0 if
@@ -473,18 +494,21 @@ class Solver2D:
     low_band_ratio (width of the geometric frequency bands below w = 20/u_b).
 
     Parallelism
-      n_workers   maximum number of processes (1: none; None: all cores). Used to evaluate psi on the
-                  grid while the solver is built, and by evaluate() to compute rows in parallel -
-                  but only where it pays: the build times its first tasks and starts processes only
-                  if a cost model predicts a clear gain (cheap lenses such as a binary usually stay
-                  serial); evaluate() uses processes only when there are >= 2 rows per process and
-                  enough processes to beat FINUFFT's own threads (about half the cores).
-                  The pool for evaluate() is started on first use and kept; call close() or use
-                  `with Solver2D(...) as s:` to stop it. Needs the 'fork' start method (Linux,
-                  macOS); elsewhere, and inside daemonic pool workers, the solver runs serially.
-      threads     threads per FINUFFT / numexpr call. None: library default (all cores) in the main
-                  process and 1 in any forked or pool-worker process (e.g. bilby's npool workers).
-    Single calls s(w, y), s.spectrum(ws, y) and s.map(w, ...) are parallelised by FINUFFT's threads.
+      n_workers   1 (default), k, or None (all cores). Building the solver: psi is evaluated on the
+                  grid by up to n_workers THREADS (worth it for large grids or expensive potentials).
+                  evaluate(ws, ys): rows are computed by up to n_workers forked PROCESSES when there
+                  are >= 2 rows per process; the pool is started on first use and kept - call close()
+                  or use `with Solver2D(...) as s:`. Processes need the 'fork' start method (Linux,
+                  macOS); elsewhere, and inside daemonic pool workers, rows run serially.
+      threads     threads of ONE transform (a spectrum or a map). 1 (default): one thread - the
+                  fastest choice for grids up to ~10^6 nodes and the right one inside a sampler
+                  that runs several likelihoods at once (bilby npool). k: FINUFFT may use up to k
+                  threads, one per 250 000 points of a transform (smaller transforms stay on one).
+                  None / 'auto': the same with k = all available cores. BLAS always runs on one
+                  thread inside a transform (needs threadpoolctl; pip install threadpoolctl), and
+                  forked or pool-worker processes always use one thread.
+    To use many cores, run many independent calls (source positions, likelihood evaluations) in
+    parallel, each on one thread, rather than one call on many threads.
 
     Interpolation in w (for very many frequencies)
       interpolate  False (default): every frequency is computed. True: F is computed on Chebyshev
@@ -497,17 +521,13 @@ class Solver2D:
                    same transform); panels are refined if the relative error exceeds it.
     """
 
-    def __init__(self, lens, y, wmin, wmax, y_radius=0.0, center=None, patch_frac=0.8, patch_max=1.0,
+    def __init__(self, lens, y, wmin, wmax, y_radius=0.0, center="auto", patch_frac=0.8, patch_max=1.0,
                  s0=0.3, cycles=8, ngl=32, nlag=30, n_cheb=None, theta_factor=1.0, bw_factor=1.3,
                  bw_margin=32, xb_min=0.0, xb_base=2.0, n_transition=3, pou_density=16.0, map_ext=1.5,
                  nufft_eps=1e-14, low_band_ratio=4.0, max_chunk=2_000_000, tail_mode=None,
-                 n_workers=1, threads=None, task_nodes=262_144, min_parallel_work=400_000,
+                 n_workers=1, threads=1, task_nodes=262_144, min_parallel_work=400_000,
                  interpolate=False, interp_tol=1e-10):
-        """
-
-        Parameters:
-        ----------
-        """
+        """See the class docstring."""
         if not lens._checked:
             lens.check_analytic()
         if interpolate not in (False, True, "auto"):
@@ -515,7 +535,10 @@ class Solver2D:
         self.interpolate, self.interp_tol = interpolate, float(interp_tol)
         self._tdgrid, self._tdcache = None, {}
         self.n_workers = available_cores() if (n_workers is None or n_workers <= 0) else int(n_workers)
-        self.threads = None if threads is None else max(1, int(threads))
+        if threads is None or threads == "auto":
+            self.threads = "auto"
+        else:
+            self.threads = max(1, int(threads))
         self.task_nodes, self.min_parallel_work = int(task_nodes), int(min_parallel_work)
         self._pool = self._pool_fin = self._pool_pid = None
         self.lens = lens
@@ -533,54 +556,86 @@ class Solver2D:
         self.LX, self.LW = _lag(nlag)
         S = np.array(lens.singular, dtype=float).reshape(-1, 2)
 
-        # ---- centre, patches, partition of unity
-        if center is None:
-            c = S[np.argmin(np.hypot(*(S - self.y0).T))] if len(S) else np.zeros(2)
-        else:
-            c = np.asarray(center, dtype=float)
-        self.c = c
-        self.yc0 = self.y0 - c
-        self.Ymax_c = float(np.hypot(*self.yc0)) + self.Re
-        patches = []
+        # ---- patch radii (independent of the centre): each patch holds one singular point
+        rho_of = []
         for k, p in enumerate(S):
-            if np.hypot(*(p - c)) < 1e-12:
-                continue
             others = [np.hypot(*(p - q)) for j, q in enumerate(S) if j != k]
-            rho = min(patch_max, patch_frac * min(others)) if others else patch_max
-            patches.append((p, rho))
-        self.patches = patches
+            rho_of.append(min(patch_max, patch_frac * min(others)) if others else patch_max)
 
-        def chi0(x1, x2):
-            x1, x2 = np.broadcast_arrays(x1, x2)
-            out = np.ones(x1.shape)
-            for p, rho in patches:                    # each bump only where it is non-zero
-                d2 = (x1 - p[0])**2 + (x2 - p[1])**2
-                m = d2 < rho * rho
-                if m.any():
-                    out[m] -= _step(np.sqrt(d2[m]) / rho, s0)
-            return out
-        chi0 = chi0 if patches else None
-
-        # ---- split radius valid for every y in the (extended) disc
-        q = lens.q_inf if lens.q_inf is not None else _estimate_q_inf(lens, c)
+        # ---- split threshold (independent of the centre)
+        if lens.q_inf is not None:
+            q = lens.q_inf
+        else:
+            q = _estimate_q_inf(lens, S.mean(axis=0) if len(S) else np.zeros(2))
         if q >= 1:
             raise ValueError(f"kappa + |gamma| = {q:.3f} >= 1: the tail cannot be rotated upward in every direction.")
         thr = max(0.5, 0.5 * (1 + q))
-        th = np.linspace(0, 2 * np.pi, 257)[:-1]
-        reach = max([np.hypot(*(p - c)) + rho for p, rho in patches], default=0.0)
-        xb = max(float(xb_base), 2 * self.Ymax_c, 1.25 * reach, float(xb_min))
-        for _ in range(400):
-            g1, g2 = lens.grad(c[0] + xb * np.cos(th), c[1] + xb * np.sin(th))
-            if np.max((np.cos(th) * (self.yc0[0] + g1) + np.sin(th) * (self.yc0[1] + g2) + self.Re) / xb) <= thr:
-                break
-            xb *= 1.1
+
+        def layout(c):
+            """Patches, split radius and smallest decay rate for polar centre c."""
+            patches = [(p, r) for p, r in zip(S, rho_of) if np.hypot(*(p - c)) >= 1e-12]
+            yc0 = self.y0 - c
+            Ymax_c = float(np.hypot(*yc0)) + self.Re
+            reach = max([np.hypot(*(p - c)) + r for p, r in patches], default=0.0)
+            xb, al = _split_radius(lens, c, yc0, self.Re, thr, max(float(xb_base), 2 * Ymax_c, 1.25 * reach,
+                                                                   float(xb_min)))
+            return patches, yc0, Ymax_c, xb, al
+
+        def make_ang_req(dists):
+            def ang_req(r_lo, r_hi):
+                n = 0.0
+                for d, rho in dists:
+                    if d - rho < r_hi and d + rho > r_lo:
+                        n = max(n, pou_density * 2 * np.pi * min(r_hi, d + rho) / ((1 - s0) * rho))
+                return n
+            return ang_req
+
+        def make_chi0(patches):
+            if not patches:
+                return None
+
+            def chi0(x1, x2):
+                x1, x2 = np.broadcast_arrays(x1, x2)
+                out = np.ones(x1.shape)
+                for p, rho in patches:                    # each bump only where it is non-zero
+                    d2 = (x1 - p[0])**2 + (x2 - p[1])**2
+                    m = d2 < rho * rho
+                    if m.any():
+                        out[m] -= _step(np.sqrt(d2[m]) / rho, s0)
+                return out
+            return chi0
+
+        # ---- centre: a given point, the singular point nearest to y, or the cheapest candidate
+        costs = None
+        if isinstance(center, str) and center == "nearest":
+            c = S[np.argmin(np.hypot(*(S - self.y0).T))] if len(S) else np.zeros(2)
+        elif center is None or (isinstance(center, str) and center == "auto"):
+            cands = [p for p in S]
+            if len(S) > 1:
+                cands.append(S.mean(axis=0))
+            if not cands:
+                cands = [np.zeros(2)]
+            uniq = []
+            for cc in cands:
+                if not any(np.hypot(*(cc - u)) < 1e-9 for u in uniq):
+                    uniq.append(np.asarray(cc, dtype=float))
+            if len(uniq) == 1:
+                c = uniq[0]
+            else:
+                costs, patch_cost = [], {}
+                for cc in uniq:
+                    costs.append((self._center_cost(cc, layout(cc), S, rho_of, patch_cost, make_chi0, make_ang_req,
+                                                    s0), tuple(cc)))
+                c = np.array(min(costs)[1])
         else:
-            raise RuntimeError("could not find a split radius; is the potential growing faster than r^2/2?")
+            c = np.asarray(center, dtype=float)
+        self.c = c
+        patches, self.yc0, self.Ymax_c, xb, _ = layout(c)
+        self.patches = patches
+        chi0 = make_chi0(patches)
         self.q_inf, self.xb0, self.ub0 = q, xb, xb * xb / 2
         self.w_switch = 20 / self.ub0
         self.ub_max = max(self.ub0, 20 / self.wmin)
-
-        self.D_out = _max_dpsi_dth(lens, c, self.xb0 / 2, max(np.sqrt(2 * self.ub_max), self.xb0))
 
         extra_r, dists = [], []
         for p, rho in patches:
@@ -588,13 +643,7 @@ class Solver2D:
             n = int(np.ceil(2 * rho / ((1 - s0) * rho / n_transition)))
             extra_r.append(np.linspace(max(0.0, d - rho), d + rho, n + 1))
             dists.append((d, rho))
-
-        def ang_req(r_lo, r_hi):
-            n = 0.0
-            for d, rho in dists:
-                if d - rho < r_hi and d + rho > r_lo:
-                    n = max(n, pou_density * 2 * np.pi * min(r_hi, d + rho) / ((1 - s0) * rho))
-            return n
+        ang_req = make_ang_req(dists)
 
         def touches(r_lo, r_hi):
             return any(d - rho < r_hi and d + rho > r_lo for d, rho in dists)
@@ -616,17 +665,15 @@ class Solver2D:
                 blocks, meta = self._plan_nodes(p, float(np.hypot(*(self.y0 - p))) + self.Re, 0.0, rho * rho / 2,
                                                 ug, V1, self.wmax, radial_weight=lambda r: _step(r / rho, s0),
                                                 extra_r=np.linspace(s0 * rho, rho, n_transition + 1))
-            blocks = [(cc, r, wr, N, wgt is not None) for cc, r, wr, N, wgt in blocks]   # picklable
             return (ug, V1) if k == 0 else None, blocks, meta
 
         n_reg = 1 + len(patches)
-        plans, _ = _adaptive_map(plan_region, [2.0] + [1.0] * len(patches), self._pmax(n_reg))
+        plans = [plan_region(k) for k in range(n_reg)]       # cheap; many small numpy calls (threads do not pay)
         self.ug_bg, self.V1_bg = plans[0][0]
-        plans = [([(cc, r, wr, N, chi0 if use else None) for cc, r, wr, N, use in blocks], meta)
-                 for _, blocks, meta in plans]
+        plans = [(blocks, meta) for _, blocks, meta in plans]
         regions = [dict(kind="background", center=tuple(c), **plans[0][1])]
         regions += [dict(kind="patch", center=tuple(p), rho=rho, **P[1]) for (p, rho), P in zip(patches, plans[1:])]
-        self.D_tail = max(plans[0][1]["D_outer"], self.D_out)
+        self.D_outer = plans[0][1]["D_outer"]
 
         # ---- plan the frequency bands: main (u_b = ub0) and geometric low bands (u_b = 20 / w_low)
         self.bands = []
@@ -641,9 +688,9 @@ class Solver2D:
                     break
                 hi = lo
 
-        # ---- evaluate psi on every planned node and tail point (the expensive part; parallel if allowed)
+        # ---- evaluate psi on every planned node and tail point (the expensive part; threads if allowed)
         groups = [[blk for P in plans for blk in P[0]]] + [b.pop("seg_blocks") for b in self.bands]
-        filled, nproc = self._fill(groups, self.bands)
+        filled, nthr = self._fill(groups, self.bands)
         self.hx1, self.hx2, self.hA, self.hW = filled[0]
         for b, seg in zip(self.bands, filled[1:]):
             b["seg"] = seg
@@ -651,7 +698,32 @@ class Solver2D:
         self.info = dict(center=tuple(c), x_b=self.xb0, q_inf=q, w_switch=self.w_switch, y_center=tuple(self.y0),
                          y_radius=self.Yr, n_head_nodes=int(self.hW.size), regions=regions,
                          bands=[(b["w_lo"], b["w_hi"], b["ub"], b["th"].size, b["seg"][0].size) for b in self.bands],
-                         setup_processes=nproc)
+                         n_tail_points=int(sum(b["th"].size * b["eps"].size for b in self.bands) * self.nlag),
+                         setup_threads=nthr,
+                         center_costs=None if costs is None else [(cc, float(v)) for v, cc in costs])
+
+    # ------------------------------------------------------------------ choice of the polar centre
+    def _center_cost(self, c, lay, S, rho_of, patch_cost, make_chi0, make_ang_req, s0):
+        """Estimated work (head nodes + 2 x main-band tail points) with polar centre c. The patch costs
+        do not depend on c and are cached in patch_cost."""
+        patches, yc0, Y, xb, al = lay
+        kw = dict(wmax=self.wmax, ngl=self.ngl, cycles=self.cycles, bw_factor=self.bw_factor,
+                  bw_margin=self.bw_margin, u_floor=self.u_floor)
+        dists = [(np.hypot(*(p - c)), rho) for p, rho in patches]
+        n = _region_cost(self.lens, c, Y, xb, weight=make_chi0(patches),
+                         ang_req=make_ang_req(dists) if patches else None, **kw)
+        for p, rho in patches:
+            key = (float(p[0]), float(p[1]))
+            if key not in patch_cost:
+                patch_cost[key] = _region_cost(self.lens, p, float(np.hypot(*(self.y0 - p))) + self.Re, rho, **kw)
+            n += patch_cost[key]
+        ub = 0.5 * xb * xb
+        w_lo = max(self.wmin, min(self.wmax, 20 / ub))
+        r_far = abs(np.sqrt(2 * (ub + 1j * 40 / (self.wmax * max(al, 1e-3)))))
+        D = _max_dpsi_dth(self.lens, c, 0.5 * xb, max(xb, r_far), n_ang=64, n_r=3)
+        n_dir = self.bw_factor * self.wmax * (r_far * Y + D) + self.bw_margin
+        n_cheb = 1 if self.wmax <= w_lo * (1 + 1e-12) else int(np.clip(14 + np.sqrt(self.wmax / w_lo), 16, 32))
+        return n + 2.0 * n_dir * n_cheb * self.nlag
 
     # ------------------------------------------------------------------ nodes of one polar region: the plan
     def _plan_nodes(self, c, Yabs, u_lo, u_hi, ug, V1, wtop, weight=None, touches=None, radial_weight=None,
@@ -700,29 +772,23 @@ class Solver2D:
         return blocks, dict(D_outer=D_outer, bands=bands)
 
     # ------------------------------------------------------------------ psi on the planned nodes
-    def _node_job(self, c, r, wr, N, s, e, weight, out, off):
-        """Angles s..e-1 (of N) on radii r of one block: write x1, x2, A = |x|^2/2 - psi, W into out[off:]."""
-        t = (2 * np.pi * np.arange(s, e) / N)[:, None]
+    def _psi_job(self, X1, X2, A, s, e):
+        """A[s:e] = |x|^2/2 - psi(x) on the head/segment nodes s..e-1."""
         with np.errstate(all="ignore"):
-            x1 = c[0] + r[None, :] * np.cos(t)
-            x2 = c[1] + r[None, :] * np.sin(t)
-            a = 0.5 * (x1 * x1 + x2 * x2) - np.real(self.lens.psi(x1, x2))
-            wt = np.broadcast_to(wr[None, :] * (2 * np.pi / N), x1.shape)
-            if weight is not None:
-                wt = wt * weight(x1, x2)
-        sl = slice(off, off + x1.size)
-        out[0][sl], out[1][sl] = x1.ravel(), x2.ravel()
-        out[2][sl] = np.broadcast_to(a, x1.shape).ravel()
-        out[3][sl] = np.ravel(wt)
+            x1, x2 = X1[s:e], X2[s:e]
+            A[s:e] = 0.5 * (x1 * x1 + x2 * x2) - np.real(self.lens.psi(x1, x2))
 
-    def _tail_job(self, b, j):
-        """Complex psi on the rotated tail of band b for the j-th Chebyshev value of 1/w."""
-        c = self.c
-        t = self.LX[None, :] * b["eps"][j] / b["al"][:, None]
-        r = np.sqrt(2 * (b["ub"] + 1j * t))
-        x1, x2 = c[0] + r * b["ct"][:, None], c[1] + r * b["st"][:, None]
-        b["dA"][:, j, :] = 0.5 * (x1 * x1 + x2 * x2) - self.lens.psi(x1, x2) - b["A0"][:, None]
-        b["dr"][:, j, :] = r - b["xb"]
+    def _weight_job(self, fn, X1, X2, W, idx):
+        """Multiply the weights of the nodes idx by the partition-of-unity function fn."""
+        with np.errstate(all="ignore"):
+            W[idx] = W[idx] * fn(X1[idx], X2[idx])
+
+    def _tail_psi_job(self, b, X1, X2, s, e):
+        """Complex psi on the rotated-tail points s..e-1 of band b (flattened directions x eps x Laguerre)."""
+        per_dir = b["eps"].size * self.nlag
+        x1, x2 = X1[s:e], X2[s:e]
+        b["dA"].reshape(-1)[s:e] = (0.5 * (x1 * x1 + x2 * x2) - self.lens.psi(x1, x2)
+                                    - b["A0"][np.arange(s, e) // per_dir])
 
     def _pmax(self, n_tasks):
         """Most processes worth considering for n_tasks independent tasks (1 = run here, serially)."""
@@ -735,63 +801,57 @@ class Solver2D:
             return 1
         return n
 
+    def _build_threads(self, work):
+        """Threads for evaluating psi while the solver is built (1 unless n_workers > 1 and the grid is large)."""
+        if work < self.min_parallel_work or mp.current_process().daemon:
+            return 1
+        return max(1, min(self.n_workers, available_cores(), int(work // 100_000)))
+
     def _fill(self, groups, bands):
-        """Evaluate psi on all planned node blocks (groups: head, then one segment per band) and on the
-        tail points of every band. The work is cut into tasks of ~task_nodes points that write into
-        preallocated arrays, so serial and parallel runs give bit-identical grids."""
-        step = lambda r: max(1, min(self.max_chunk, self.task_nodes) // max(r.size, 1))
+        """Evaluate psi on all planned nodes (groups: head, then one segment per band) and on the tail
+        points of every band. The node coordinates of all blocks are laid out first; psi and the
+        partition-of-unity weight are then evaluated on chunks of ~task_nodes points (few large numpy
+        calls instead of many small ones), by up to n_workers threads. The chunks write into disjoint
+        slices, so threaded and serial runs give identical grids."""
         sizes = [sum(N * r.size for _, r, _, N, _ in blocks) for blocks in groups]
-        n_tasks = sum(-(-N // step(r)) for blocks in groups for _, r, _, N, _ in blocks) + sum(b["eps"].size for b in bands)
-        work = sum(sizes) + sum(3 * b["th"].size * b["eps"].size * self.nlag for b in bands)  # complex psi ~ 3x
-        pmax = self._pmax(n_tasks) if work >= self.min_parallel_work else 1
-        outs = [tuple(np.empty(n_tot) for _ in range(4)) for n_tot in sizes]
-        jobs, cost, meta = [], [], []
-        for g, blocks in enumerate(groups):
-            off = 0
+        n_tail = [b["th"].size * b["eps"].size * self.nlag for b in bands]
+        work = sum(sizes) + 3 * sum(n_tail)                     # complex psi ~ 3x
+        nthr = self._build_threads(work)
+        chunk = int(np.clip(work // (4 * nthr), 32_768, max(32_768, min(self.max_chunk, self.task_nodes))))
+        jobs, outs = [], []
+        for blocks, n_tot in zip(groups, sizes):
+            X1, X2, A, W = (np.empty(n_tot) for _ in range(4))
+            weighted, off = {}, 0
             for c, r, wr, N, wgt in blocks:
-                for s in range(0, N, step(r)):
-                    e = min(N, s + step(r))
-                    # outs[g] is looked up when the job runs: it may have moved to shared memory
-                    jobs.append(lambda c=c, r=r, wr=wr, N=N, s=s, e=e, wgt=wgt, g=g, off=off:
-                                self._node_job(c, r, wr, N, s, e, wgt, outs[g], off))
-                    cost.append((e - s) * r.size)
-                    meta.append(("node", g, off + (e - s) * r.size))
-                    off += (e - s) * r.size
-        for k, b in enumerate(bands):
+                t = 2 * np.pi * np.arange(N) / N
+                n = N * r.size
+                X1[off:off + n] = (c[0] + np.cos(t)[:, None] * r[None, :]).ravel()
+                X2[off:off + n] = (c[1] + np.sin(t)[:, None] * r[None, :]).ravel()
+                W[off:off + n] = np.broadcast_to(wr[None, :] * (2 * np.pi / N), (N, r.size)).ravel()
+                if wgt is not None:
+                    weighted.setdefault(id(wgt), (wgt, []))[1].append(np.arange(off, off + n))
+                off += n
+            jobs += [partial(self._psi_job, X1, X2, A, s, min(n_tot, s + chunk)) for s in range(0, n_tot, chunk)]
+            for fn, idx in weighted.values():
+                idx = np.concatenate(idx)
+                jobs += [partial(self._weight_job, fn, X1, X2, W, idx[s:s + chunk]) for s in range(0, idx.size, chunk)]
+            outs.append((X1, X2, A, W))
+        c = self.c
+        for b, n in zip(bands, n_tail):
             shape = (b["th"].size, b["eps"].size, self.nlag)
-            b["dA"], b["dr"] = np.empty(shape, dtype=complex), np.empty(shape, dtype=complex)
-            jobs.extend(partial(self._tail_job, b, j) for j in range(shape[1]))
-            cost.extend([3 * shape[0] * shape[2]] * shape[1])
-            meta.extend(("tail", k, j) for j in range(shape[1]))
-
-        def to_shared(n_done):
-            # processes will be used: move the outputs to shared memory, keeping what is already done
-            # (only now, because shared pages are slower to fill than private ones)
-            lim = [0] * len(outs)
-            for kind, a, b_ in meta[:n_done]:
-                if kind == "node":
-                    lim[a] = b_
-            for g, out in enumerate(outs):
-                new = tuple(_buffer(x.size, float, True) for x in out)
-                for x_new, x_old in zip(new, out):
-                    x_new[:lim[g]] = x_old[:lim[g]]
-                outs[g] = new
-            for k, b in enumerate(bands):
-                done_j = [j for kind, kk, j in meta[:n_done] if kind == "tail" and kk == k]
-                for key in ("dA", "dr"):
-                    new = _buffer(b[key].size, complex, True).reshape(b[key].shape)
-                    new[:, done_j, :] = b[key][:, done_j, :]
-                    b[key] = new
-
-        _, nproc = _adaptive_map(lambda i: jobs[i](), cost, pmax, before_fork=to_shared)
-        if nproc > 1:                                         # private copies of the shared tables
-            for b in bands:
-                b["dA"], b["dr"] = np.array(b["dA"]), np.array(b["dr"])
+            t = self.LX[None, None, :] * b["eps"][None, :, None] / b["al"][:, None, None]
+            r = np.sqrt(2 * (b["ub"] + 1j * t))
+            b["dr"] = r - b["xb"]
+            b["dA"] = np.empty(shape, dtype=complex)
+            X1 = (c[0] + r * b["ct"][:, None, None]).ravel()
+            X2 = (c[1] + r * b["st"][:, None, None]).ravel()
+            jobs += [partial(self._tail_psi_job, b, X1, X2, s, min(n, s + chunk)) for s in range(0, n, chunk)]
+        _thread_map(lambda i: jobs[i](), len(jobs), nthr)
         filled = []
         for X1, X2, A, W in outs:                             # drop nodes outside the partition of unity
             m = W != 0
             filled.append((X1[m], X2[m], A[m], W[m]))
-        return filled, nproc
+        return filled, nthr
 
     # ------------------------------------------------------------------ frequency band: segment + tail plan
     def _plan_band(self, w_lo, w_hi, ub, n_cheb):
@@ -804,8 +864,16 @@ class Solver2D:
         th0 = np.linspace(0, 2 * np.pi, 257)[:-1]
         g1, g2 = lens.grad(c[0] + xb * np.cos(th0), c[1] + xb * np.sin(th0))
         al0 = 1 - (np.cos(th0) * (self.yc0[0] + g1) + np.sin(th0) * (self.yc0[1] + g2) + self.Re) / xb
-        r_far = abs(np.sqrt(2 * (ub + 1j * 40 / (w_lo * max(np.min(al0), 1e-3)))))
-        N = _even((self.bw_factor * w_hi * (r_far * self.Ymax_c + self.D_tail) + self.bw_margin) * self.theta_factor)
+        # Directions of the tail sum: its angular bandwidth is at most w (|r| |y - c| + max |d psi/d theta|)
+        # along the rotated contour up to ~40 e-folds, |r| <= r_far(w) = |sqrt(2 (u_b + 40 i/(w alpha)))|.
+        # Both w r_far(w) and w max|d psi/d theta| grow with w, so the worst case is w = w_hi of the band
+        # (previously r_far was taken at w_lo and max|d psi/d theta| over the radii of ALL bands, which
+        # for an external shear, |d psi/d theta| ~ gamma r^2, gave 10-100x too many directions).
+        r_far = abs(np.sqrt(2 * (ub + 1j * 40 / (w_hi * max(np.min(al0), 1e-3)))))
+        D = _max_dpsi_dth(lens, c, 0.5 * xb, max(xb, r_far))
+        if ub <= self.ub0 * (1 + 1e-12):
+            D = max(D, self.D_outer)
+        N = _even((self.bw_factor * w_hi * (r_far * self.Ymax_c + D) + self.bw_margin) * self.theta_factor)
         th = 2 * np.pi * np.arange(N) / N
         ct, st = np.cos(th), np.sin(th)
         g1, g2 = lens.grad(c[0] + xb * ct, c[1] + xb * st)
@@ -853,22 +921,23 @@ class Solver2D:
             raise ValueError(f"frequencies must lie in [{self.wmin:g}, {self.wmax:g}] for this solver")
 
     # ------------------------------------------------------------------ threads and processes
-    def _nthreads(self):
-        """Threads per FINUFFT/numexpr call: None = library default (all cores)."""
-        if _forked():           # OpenMP cannot start threads in a forked child of a process that used it
-            if self.threads not in (None, 1):
+    def _nthreads(self, n_points=None):
+        """Threads for one FINUFFT / numexpr call on n_points points (None: the most this solver may use).
+        One thread per _PTS_PER_THREAD points, at most `threads` (all cores for 'auto'); always 1 in
+        forked or pool-worker processes."""
+        if _forked() or mp.current_process().daemon:
+            if _forked() and self.threads != 1:  # OpenMP cannot start threads in a forked child of a process that used it
                 _warn_once("forkthreads", "threads > 1 is ignored in a forked process (OpenMP would deadlock).")
             return 1
-        if self.threads is not None:
-            return self.threads
-        return 1 if mp.current_process().daemon else None
+        if self.threads == 1:
+            return 1
+        cap = available_cores() if self.threads == "auto" else min(int(self.threads), available_cores())
+        if n_points is None:
+            return max(1, cap)
+        return int(max(1, min(cap, int(n_points) // _PTS_PER_THREAD)))
 
-    def _fopts(self):
-        n = self._nthreads()
-        if n is None:
-            return {}
-        _set_ne_threads(n)
-        return {"nthreads": n}
+    def _fopts(self, n_points):
+        return {"nthreads": self._nthreads(n_points)}
 
     def _get_pool(self):
         if self._pool is not None and self._pool_pid != os.getpid():     # inherited from a parent process
@@ -903,7 +972,7 @@ class Solver2D:
         if phi.size == 0:
             return np.zeros(ws.size, dtype=complex)
         if finufft is not None and ws.size >= 4:
-            return finufft.nufft1d3(phi, W.astype(complex), ws, isign=1, eps=self.nufft_eps, **self._fopts())
+            return finufft.nufft1d3(phi, W.astype(complex), ws, isign=1, eps=self.nufft_eps, **self._fopts(phi.size))
         if ws.size > 20:
             _warn_once("nufft1", "finufft is not installed: frequency sums are done directly (much slower). "
                                  "pip install finufft")
@@ -918,7 +987,7 @@ class Solver2D:
     def _sum_y(self, X1, X2, C, k1, k2):
         """sum_j C_j exp(-i (k1 X1_j + k2 X2_j)) for arrays of targets (k1, k2)."""
         if finufft is not None and k1.size >= 4:
-            return finufft.nufft2d3(X1, X2, C, k1, k2, isign=-1, eps=self.nufft_eps, **self._fopts())
+            return finufft.nufft2d3(X1, X2, C, k1, k2, isign=-1, eps=self.nufft_eps, **self._fopts(X1.size))
         if k1.size > 20:
             _warn_once("nufft2", "finufft is not installed: maps are summed directly (much slower). pip install finufft")
         out = np.empty(k1.size, dtype=complex)
@@ -928,6 +997,7 @@ class Solver2D:
 
     def _phases(self, A, x1, x2, y):
         if ne is not None and A.size > 100_000:
+            _set_ne_threads(self._nthreads(A.size))
             return ne.evaluate("A - x1 * a - x2 * b", local_dict=dict(A=A, x1=x1, x2=x2, a=float(y[0]), b=float(y[1])))
         return A - x1 * y[0] - x2 * y[1]
 
@@ -942,6 +1012,7 @@ class Solver2D:
         wj = (1 / b["eps"])[None, :, None]
         L = self.LX[None, None, :]
         if ne is not None:
+            _set_ne_threads(self._nthreads(b["dA"].size))
             E3 = ne.evaluate("exp(1j * wj * (dA - dr * sig) + L)", local_dict=dict(wj=wj, dA=b["dA"], dr=b["dr"], sig=sig, L=L))
         else:
             E3 = np.exp(1j * wj * (b["dA"] - b["dr"] * sig) + L)
@@ -972,7 +1043,7 @@ class Solver2D:
             for m in range(2, nc):
                 T[m] = 2 * xx * T[m - 1] - T[m - 2]
         if finufft is not None and P.size * wb.size > 60_000:
-            R = finufft.nufft1d3(P, D, wb, isign=1, eps=self.nufft_eps, **self._fopts()).reshape(nc, wb.size)
+            R = finufft.nufft1d3(P, D, wb, isign=1, eps=self.nufft_eps, **self._fopts(P.size * nc)).reshape(nc, wb.size)
         else:
             R = D @ np.exp(1j * np.outer(P, wb))
         return np.sum(R * T, axis=0) / wb
@@ -981,6 +1052,10 @@ class Solver2D:
     def spectrum(self, ws, y=None, interpolate=None):
         """F at an array of frequencies for one source position y (default: the centre).
         interpolate: None = the solver's setting; True / False / 'auto' (see the class docstring)."""
+        with _blas_single():
+            return self._spectrum(ws, y, interpolate)
+
+    def _spectrum(self, ws, y=None, interpolate=None):
         ws = np.atleast_1d(np.asarray(ws, dtype=float))
         y = self._as_y(y)
         self._check_y(y[0], y[1])
@@ -1000,7 +1075,6 @@ class Solver2D:
         return F
 
     def _spectrum_exact(self, wp, y):
-        self._fopts()                                 # sets the numexpr thread count for this process
         total = self._sum_w(self._phases(self.hA, self.hx1, self.hx2, y), self.hW, wp)
         band_idx = self._band_index(wp)
         for bi in np.unique(band_idx):
@@ -1095,6 +1169,10 @@ class Solver2D:
 
     def map(self, w, y1, y2, n_xi=512, n_cheb_sigma=48):
         """F at one frequency for source positions (y1, y2) (arrays of any common shape)."""
+        with _blas_single():
+            return self._map(w, y1, y2, n_xi, n_cheb_sigma)
+
+    def _map(self, w, y1, y2, n_xi=512, n_cheb_sigma=48):
         w = float(w)
         y1 = np.asarray(y1, dtype=float); y2 = np.asarray(y2, dtype=float)
         shape = np.broadcast(y1, y2).shape
@@ -1105,6 +1183,10 @@ class Solver2D:
         self._check_w(np.array([w]))
         if self.Yr == 0:                              # single-source solver: every target is the centre
             return np.full(shape, self.spectrum([w])[0])
+        if self.ext <= 1.0:
+            raise ValueError(f"map() needs a solver built with map_ext > 1 (this one has map_ext = {self.ext:g}): the "
+                             "tail is windowed over map_ext * y_radius. Use the default map_ext=1.5, or spectrum() "
+                             "for each source position.")
         bi = self._band_of(w)
         b = self.bands[bi]
         lens, c, LX, LW = self.lens, self.c, self.LX, self.LW
@@ -1149,7 +1231,8 @@ class Solver2D:
         ys = np.atleast_2d(np.asarray(ys, dtype=float))
         self._check_y(ys[:, 0], ys[:, 1])
         self._check_w(ws[ws > 0])
-        by_y = ys.shape[0] <= ws.size or self.Yr == 0
+        # maps need the window margin of map_ext > 1; otherwise always one spectrum per source position
+        by_y = ys.shape[0] <= ws.size or self.Yr == 0 or self.ext <= 1.0
         n_rows = ys.shape[0] if by_y else ws.size
         out = np.empty((ys.shape[0], ws.size), dtype=complex)
         # A serial row is one FINUFFT transform on all its threads; in a worker it runs on one thread.
@@ -1157,7 +1240,7 @@ class Solver2D:
         # only pay off once at least that many rows run at the same time, each process getting >= 2
         # rows (which also pays for starting the processes).
         nproc = self._pmax(n_rows // 2)
-        serial_threads = self._nthreads() or available_cores()
+        serial_threads = self._nthreads(self.hW.size)
         if nproc > 1 and nproc < _THREAD_EFF * serial_threads:
             nproc = 1
         if nproc > 1:
@@ -1237,7 +1320,7 @@ def _region_of(y1, y2):
     y1, y2 = np.ravel(y1), np.ravel(y2)
     yc = np.array([(y1.min() + y1.max()) / 2, (y2.min() + y2.max()) / 2])
     R = float(np.max(np.hypot(y1 - yc[0], y2 - yc[1])))
-    return yc, max(R, 1e-9) * (1 + 1e-9)
+    return yc, (R * (1 + 1e-9) if R > 1e-12 else 0.0)        # one position: single-source solver
 
 
 def amplification_map(w, y1, y2, lens, **kw):
@@ -1258,5 +1341,3 @@ def amplification_grid(ws, ys, lens, **kw):
     yc, R = _region_of(ys[:, 0], ys[:, 1])
     with Solver2D(lens, yc, wp.min(), wp.max(), y_radius=R, **kw) as s:
         return s.evaluate(ws, ys)
-
-

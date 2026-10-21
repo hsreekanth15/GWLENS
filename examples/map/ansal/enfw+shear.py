@@ -112,4 +112,5 @@ for i, c in enumerate(cs):
     cb.set_ticks(np.arange(step, vmax, step))  
     #fig.suptitle(r"Elliptical NFW, $M_{200}=10^{13} M_\odot$, $z_l=0.5$, $z_s=1.5$")
 fig.savefig("enfw_shear_map.pdf", bbox_inches="tight")
+fig.savefig("enfw_shear_map.png", bbox_inches="tight",dpi=300)
 plt.show()

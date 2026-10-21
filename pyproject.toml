@@ -25,6 +25,8 @@ docs = [
     "sphinx>=7",
     "sphinx-rtd-theme>=2",
     "myst-parser>=4",
+    "sphinx_design",
+    "pandoc",
     "sphinx-autobuild>=2024.2.4",
 ]
 

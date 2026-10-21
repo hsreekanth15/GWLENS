@@ -3,11 +3,11 @@ import timeit
 import numpy as np
 import matplotlib.pyplot as plt
 from gwlens.tools import plotting
-from gwlens import solver2d
+from gwlens import solver2d_old
 from glow import lenses, time_domain_c, freq_domain_c
 plotting.apply_figure_style()
 
-peset = solver2d.PE_SETTINGS
+peset = solver2d_old.PE_SETTINGS
 
 COLORS = ["#7f7f7f", "#8e1b9e", "#b22222", "#1f77b4", "#e08a00", "#2a9d8f"]
 BENCH_COLORS = ["#4682a8", "#a0553f", "#7f7f7f", "#8e1b9e", "#e08a00", "#2a9d8f"]   # blue / brown
@@ -30,7 +30,7 @@ def build_4sis(seed=1235, R=1.0, n=4):
     xc1, xc2 = distribute_centers(n, R, seed)
     gw = None
     for a, b in zip(xc1, xc2):
-        p = solver2d.sis(1.0 / n, (a, b))
+        p = solver2d_old.sis(1.0 / n, (a, b))
         gw = p if gw is None else gw + p
     gl = lenses.CombinedLens({'lenses': [
         lenses.Psi_offcenterSIS(p_phys={'psi0': 1.0 / n, 'xc1': a, 'xc2': b})
@@ -39,8 +39,8 @@ def build_4sis(seed=1235, R=1.0, n=4):
 
 def build_4cis(rc=0.05, n=4):
     cen = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
-    gw = sum((solver2d.cis(1.0 / n, rc, c) for c in cen[1:]),
-             solver2d.cis(1.0 / n, rc, cen[0]))
+    gw = sum((solver2d_old.cis(1.0 / n, rc, c) for c in cen[1:]),
+             solver2d_old.cis(1.0 / n, rc, cen[0]))
     gl = lenses.CombinedLens({'lenses': [
         lenses.Psi_offcenterCIS(p_phys={'psi0': 1.0 / n, 'rc': rc, 'xc1': a, 'xc2': b})
         for a, b in cen]})
@@ -48,7 +48,7 @@ def build_4cis(rc=0.05, n=4):
 
 def build_binary():
     m, cen = [0.5, 0.5], [(-0.5, 0.0), (0.5, 0.0)]
-    gw = solver2d.point_mass(m[0], cen[0]) + solver2d.point_mass(m[1], cen[1])
+    gw = solver2d_old.point_mass(m[0], cen[0]) + solver2d_old.point_mass(m[1], cen[1])
     gl = lenses.CombinedLens({'lenses': [
         lenses.Psi_offcenterPointLens(p_phys={'psi0': mi, 'xc1': a, 'xc2': b})
         for mi, (a, b) in zip(m, cen)]})
@@ -69,7 +69,7 @@ P_T = {
     'tmax': 1e9,
     'Nt': 5000,
     'sampling': 'log',
-    'parallel': True
+    'parallel': False
 }
 
 P_FFT = {
@@ -126,7 +126,7 @@ for lens_name, builder in models:
         #ws = ws_full[indices]
         ws = np.logspace(-4, 2, n_w)
         def run_gwlens():
-            return solver2d.amplification_many( ws,(y_source, 0.0), lens_gw,n_workers=None,threads=None,interpolate=False,nlag=16)
+            return solver2d_old.amplification_many( ws,(y_source, 0.0), lens_gw,n_workers=-1,threads=None,interpolate=True,nlag=16)
 
         def run_glow():
             It = time_domain_c.It_MultiContour_C( lens_glow,max(y_source, 1e-6),dict(P_T))
