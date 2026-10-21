@@ -10,40 +10,28 @@ from functools import partial
 import numpy as np
 from scipy.special import roots_legendre, roots_laguerre, expit
 try:
-    import finufft                      # needed for fast many-frequency / many-position sums
+    import finufft                 
 except ImportError:
     finufft = None
 try:
-    import numexpr as ne                # optional: faster elementwise work
+    import numexpr as ne                
 except ImportError:
     ne = None
 try:
-    from threadpoolctl import ThreadpoolController    # optional: keeps BLAS on one thread in the sums
+    from threadpoolctl import ThreadpoolController    
 except ImportError:
     ThreadpoolController = None
 
 _GL, _LAG = {}, {}
 
 
-# ================================================================== parallel helpers
-# Threads and processes
-#  * Building a solver: psi is evaluated on the grid by up to n_workers THREADS (numpy releases the
-#    GIL in its elementwise loops, so no processes, forking or shared memory are needed).
-#  * evaluate(ws, ys) with many rows: rows go to n_workers forked PROCESSES (one thread each).
-#  * One transform (a spectrum or a map): FINUFFT and numexpr threads (if threads > 1), but only where
-#    the arrays are large enough to gain (>= _PTS_PER_THREAD points per thread); BLAS stays on one.
-#    Several thread pools (OpenMP, numexpr, BLAS) alternating on the same cores is what made
-#    threads=None slower than one thread.
-# Processes are started with 'fork', so workers inherit the lens (which may hold lambdas) and the
-# finished grid without any pickling. Two rules keep this safe:
-#  * a forked process must not start OpenMP threads if its parent already did (GNU libgomp then
-#    deadlocks), so FINUFFT runs with one thread in every forked process;
-#  * worker processes never start processes of their own.
+
 _IMPORT_PID = os.getpid()
 _NE_SET = {}
 _WORKER = {}
 _TPC = {}
-_PTS_PER_THREAD = 250_000          # a FINUFFT / numexpr thread pays off from ~this many points
+_PTS_PER_THREAD = 250_000        
+  # a FINUFFT / numexpr thread pays off from ~this many points
 
 
 def available_cores():
@@ -159,7 +147,7 @@ def _unique_points(pts, tol=1e-12):
     return out
 
 
-# ================================================================== lens objects
+#  lens objects
 class Lens:
     """A lens potential psi(x1, x2) plus the list of its singular points.
 
@@ -235,7 +223,7 @@ class Lens:
         return mism
 
 
-# ------------------------------------------------------------------ ready-made components
+# ready-made components
 def point_mass(m=1.0, x0=(0.0, 0.0)):
     """psi = m ln|x - x0|."""
     a, b, m = float(x0[0]), float(x0[1]), float(m)
@@ -279,7 +267,7 @@ def external_shear(gamma1=0.0, gamma2=0.0, kappa=0.0):
     return Lens(f, singular=[], q_inf=k + np.hypot(g1, g2))
 
 
-# ================================================================== helpers
+# helpers
 def _step(s, s0, b=2.5):
     """C-infinity step: 1 for s <= s0, 0 for s >= 1.
     Planck taper 1/(1 + exp(b [1/(1-t) - 1/t])), t = (s - s0)/(1 - s0); b = 2.5 minimises the
@@ -420,7 +408,7 @@ def _warn_once(key, msg):
         warnings.warn(msg)
 
 
-# ================================================================== optional interpolation in w
+# optional interpolation in w
 def _interp_panels(w_lo, w_hi, B):
     """Panel edges on [w_lo, w_hi]: phase B*(width) <= 10 rad, width <= left end (geometric near w = 0)."""
     edges, a = [w_lo], w_lo
@@ -464,7 +452,7 @@ def _interp_eval(w, edges, G, xc):
     return out
 
 
-# ================================================================== the solver
+#  solver
 class Solver2D:
     """Lens grid for all source positions |y' - y| <= y_radius and all frequencies wmin <= w <= wmax.
 
@@ -556,13 +544,13 @@ class Solver2D:
         self.LX, self.LW = _lag(nlag)
         S = np.array(lens.singular, dtype=float).reshape(-1, 2)
 
-        # ---- patch radii (independent of the centre): each patch holds one singular point
+        #  patch radii (independent of the centre): each patch holds one singular point
         rho_of = []
         for k, p in enumerate(S):
             others = [np.hypot(*(p - q)) for j, q in enumerate(S) if j != k]
             rho_of.append(min(patch_max, patch_frac * min(others)) if others else patch_max)
 
-        # ---- split threshold (independent of the centre)
+        #  split threshold (independent of the centre)
         if lens.q_inf is not None:
             q = lens.q_inf
         else:
@@ -605,7 +593,7 @@ class Solver2D:
                 return out
             return chi0
 
-        # ---- centre: a given point, the singular point nearest to y, or the cheapest candidate
+        # centre: a given point, the singular point nearest to y, or the cheapest candidate
         costs = None
         if isinstance(center, str) and center == "nearest":
             c = S[np.argmin(np.hypot(*(S - self.y0).T))] if len(S) else np.zeros(2)
@@ -675,7 +663,7 @@ class Solver2D:
         regions += [dict(kind="patch", center=tuple(p), rho=rho, **P[1]) for (p, rho), P in zip(patches, plans[1:])]
         self.D_outer = plans[0][1]["D_outer"]
 
-        # ---- plan the frequency bands: main (u_b = ub0) and geometric low bands (u_b = 20 / w_low)
+        # plan the frequency bands: main (u_b = ub0) and geometric low bands (u_b = 20 / w_low)
         self.bands = []
         if self.wmax >= self.w_switch:
             self.bands.append(self._plan_band(max(self.wmin, self.w_switch), self.wmax, self.ub0, n_cheb))
@@ -688,7 +676,7 @@ class Solver2D:
                     break
                 hi = lo
 
-        # ---- evaluate psi on every planned node and tail point (the expensive part; threads if allowed)
+        # evaluate psi on every planned node and tail point (the expensive part; threads if allowed)
         groups = [[blk for P in plans for blk in P[0]]] + [b.pop("seg_blocks") for b in self.bands]
         filled, nthr = self._fill(groups, self.bands)
         self.hx1, self.hx2, self.hA, self.hW = filled[0]
@@ -702,7 +690,7 @@ class Solver2D:
                          setup_threads=nthr,
                          center_costs=None if costs is None else [(cc, float(v)) for v, cc in costs])
 
-    # ------------------------------------------------------------------ choice of the polar centre
+    #  choice of the polar centre
     def _center_cost(self, c, lay, S, rho_of, patch_cost, make_chi0, make_ang_req, s0):
         """Estimated work (head nodes + 2 x main-band tail points) with polar centre c. The patch costs
         do not depend on c and are cached in patch_cost."""
@@ -725,7 +713,6 @@ class Solver2D:
         n_cheb = 1 if self.wmax <= w_lo * (1 + 1e-12) else int(np.clip(14 + np.sqrt(self.wmax / w_lo), 16, 32))
         return n + 2.0 * n_dir * n_cheb * self.nlag
 
-    # ------------------------------------------------------------------ nodes of one polar region: the plan
     def _plan_nodes(self, c, Yabs, u_lo, u_hi, ug, V1, wtop, weight=None, touches=None, radial_weight=None,
                     extra_r=(), ang_req=None):
         """Radial nodes and angular counts of one polar region (psi is not evaluated on the grid here).
@@ -771,7 +758,7 @@ class Solver2D:
             blocks.append((np.asarray(c, dtype=float), xb_n, wb_n, N, weight if use_w else None))
         return blocks, dict(D_outer=D_outer, bands=bands)
 
-    # ------------------------------------------------------------------ psi on the planned nodes
+
     def _psi_job(self, X1, X2, A, s, e):
         """A[s:e] = |x|^2/2 - psi(x) on the head/segment nodes s..e-1."""
         with np.errstate(all="ignore"):
@@ -853,7 +840,7 @@ class Solver2D:
             filled.append((X1[m], X2[m], A[m], W[m]))
         return filled, nthr
 
-    # ------------------------------------------------------------------ frequency band: segment + tail plan
+
     def _plan_band(self, w_lo, w_hi, ub, n_cheb):
         lens, c = self.lens, self.c
         xb = np.sqrt(2 * ub)
@@ -1283,29 +1270,125 @@ def _err_kw(s, kw):
 
 
 def amplification(w, y, lens, estimate_error=False, return_info=False, **kw):
-    """F at one frequency and one source position."""
-    w = float(w)
-    if w == 0:
-        return 1.0 + 0.0j
-    with Solver2D(lens, y, w, w, **kw) as s:
-        F = s(w)
-    out = [F]
+    """
+    F(w, y) for scalars or arrays, with numpy broadcasting. A source position is a pair (y1, y2) in
+    the LAST axis of y: y has shape (..., 2), and w broadcasts against y[..., 0]. One solver serves all
+    points, and the fastest path is chosen from the inputs:
+
+        amplification(0.5, (0.3, 0.1), lens)                     one value
+        amplification(ws, (0.3, 0.1), lens)                      many frequencies, one y  -> s.spectrum
+        amplification(0.5, ys, lens)          ys: (K, 2)          one frequency, many y    -> s.evaluate / s.map
+        amplification(0.5, np.stack([Y1, Y2], -1), lens)          map on an image grid, shape Y1.shape
+        amplification(ws[None, :], ys[:, None, :], lens)          table (K, len(ws))       -> s.evaluate
+        amplification(ws, ys, lens)           ws: (K,), ys: (K, 2) pairs (ws[k], ys[k])
+
+    Pairs are grouped by the coordinate with fewer distinct values (one spectrum per distinct
+    position, or one map per distinct w); if they fill most of a grid, the table is computed instead.
+    It supports all keywords of Solver2D, e.g. ngl, nlag, y_radius, map_ext, threads, n_workers,
+    interpolate, and **PE_SETTINGS.
+
+    Parameters:
+    -----------
+    w : float or array_like
+        Frequencies (w = 0 gives F = 1).
+    y : array_like, shape (..., 2)
+        Source positions (y1, y2); the leading axes broadcast against w.
+    lens : Lens
+        Lens model (see Lens and the ready-made lenses).
+    estimate_error : bool, optional
+        If True, also returns max(|F - F'|, |F - F''|) with F' from twice the tail directions and F''
+        from a farther split (an estimate of the error, same shape as F).
+    return_info : bool, optional
+        If True, also returns the solver's info dict.
+    **kw : dict
+        Keyword arguments of Solver2D (see the Solver2D class for available options).
+
+    Returns:
+    --------
+    F with the broadcast shape of w and y[..., 0] (a complex scalar if w is a scalar and y one
+    position); then the error (if estimate_error) and the info dict (if return_info), as a tuple.
+    """
+    y = np.asarray(y, dtype=float)
+    if y.ndim == 0 or y.shape[-1] != 2:
+        raise ValueError("y must hold source positions (y1, y2) in its last axis, shape (..., 2)")
+    wb, y1b, y2b = np.broadcast_arrays(np.asarray(w, dtype=float), y[..., 0], y[..., 1])
+    shape, wf = wb.shape, wb.ravel()
+    yf = np.stack([y1b.ravel(), y2b.ravel()], axis=1)
+    pos = wf > 0
+
+    def pack(F, E, info):
+        F = F.reshape(shape)
+        F = F[()] if shape == () else F
+        out = [F]
+        if estimate_error:
+            E = E.reshape(shape)
+            out.append(E[()] if shape == () else E)
+        if return_info:
+            out.append(info)
+        return out[0] if len(out) == 1 else tuple(out)
+
+    if not pos.any():
+        return pack(np.ones(wf.size, dtype=complex), np.zeros(wf.size), {})
+    wlo, whi = wf[pos].min(), wf[pos].max()
+    yu = np.unique(yf[pos], axis=0)
+    with _solver_for(lens, wlo, whi, yu, kw) as s:
+        F = _evaluate_pairs(s, wf, yf)
+        info = dict(s.info, n_eval=s.info.get("n_head_nodes")) if return_info else {}
+    E = None
     if estimate_error:
         kw2, kw3 = _err_kw(s, kw)
-        out.append(max(abs(Solver2D(lens, y, w, w, **kw2)(w) - F), abs(Solver2D(lens, y, w, w, **kw3)(w) - F)))
-    if return_info:
-        out.append(dict(s.info, n_eval=s.info["n_head_nodes"]))
-    return out[0] if len(out) == 1 else tuple(out)
+        E = np.zeros(wf.size)
+        for k in (kw2, kw3):
+            with _solver_for(lens, wlo, whi, yu, k) as s2:
+                E = np.maximum(E, np.abs(_evaluate_pairs(s2, wf, yf) - F))
+    return pack(F, E, info)
 
 
-def amplification_many(ws, y, lens, estimate_error=False, **kw):
-    """F at many frequencies for one source position (one grid, one non-uniform FFT).
-    
-    """
+def _solver_for(lens, wmin, wmax, ys, kw):
+    """One solver for the frequencies [wmin, wmax] and the distinct source positions ys (shape (K, 2)).
+    A y_radius in kw is kept if it is larger than needed."""
+    kw = dict(kw)
+    r_user = float(kw.pop("y_radius", 0.0))
+    if ys.shape[0] == 1:
+        return Solver2D(lens, ys[0], wmin, wmax, y_radius=r_user, **kw)
+    yc, R = _region_of(ys[:, 0], ys[:, 1])
+    return Solver2D(lens, yc, wmin, wmax, y_radius=max(R, r_user), **kw)
+
+
+def _evaluate_pairs(s, wf, yf):
+    """F at the pairs (wf[i], yf[i]) (wf flat, yf shape (N, 2)) with the solver s, by the cheapest path."""
+    out = np.ones(wf.size, dtype=complex)
+    pos = wf > 0
+    wq, yq = wf[pos], yf[pos]
+    uw, iw = np.unique(wq, return_inverse=True)
+    uy, iy = np.unique(yq, axis=0, return_inverse=True)
+    iw, iy = iw.reshape(-1), iy.reshape(-1)
+    if uy.shape[0] == 1:                                     # one source position: one spectrum
+        vals = s.spectrum(uw, uy[0])[iw]
+    elif uw.size * uy.shape[0] <= 4 * wq.size:               # one frequency, or (nearly) a grid: the table
+        vals = s.evaluate(uw, uy)[iy, iw]                    # (one map per w or one spectrum per y)
+    else:                                                    # scattered pairs
+        vals = np.empty(wq.size, dtype=complex)
+        if uy.shape[0] <= uw.size:
+            for k in range(uy.shape[0]):
+                sel = iy == k
+                vals[sel] = s.spectrum(wq[sel], uy[k])
+        else:
+            for k in range(uw.size):
+                sel = iw == k
+                vals[sel] = s.evaluate(uw[k:k + 1], yq[sel])[:, 0]
+    out[pos] = vals
+    return out
+
+
+def amplification_spectrum(ws, y, lens, estimate_error=False, **kw):
+    """F at many frequencies for one source position (one grid, one non-uniform FFT): the frequency
+    spectrum of the amplification. Formerly amplification_many."""
     ws = np.atleast_1d(np.asarray(ws, dtype=float))
     wp = ws[ws > 0]
     if wp.size == 0:
-        return np.ones(ws.size, dtype=complex)
+        F = np.ones(ws.size, dtype=complex)
+        return (F, np.zeros(ws.size)) if estimate_error else F
     with Solver2D(lens, y, wp.min(), wp.max(), **kw) as s:
         F = s.spectrum(ws)
     if not estimate_error:
@@ -1330,8 +1413,9 @@ def amplification_map(w, y1, y2, lens, **kw):
         return s.map(w, y1, y2)
 
 
-def amplification_grid(ws, ys, lens, **kw):
+def amplification_table(ws, ys, lens, **kw):
     """Table F[k, m] = F(ws[m], ys[k]) for many frequencies and many source positions (ys: shape (K, 2)).
+    Formerly amplification_grid.
     Pass n_workers=None (all cores) or n_workers=k to build the grid and compute the rows in parallel."""
     ws = np.atleast_1d(np.asarray(ws, dtype=float))
     ys = np.atleast_2d(np.asarray(ys, dtype=float))
@@ -1341,3 +1425,16 @@ def amplification_grid(ws, ys, lens, **kw):
     yc, R = _region_of(ys[:, 0], ys[:, 1])
     with Solver2D(lens, yc, wp.min(), wp.max(), y_radius=R, **kw) as s:
         return s.evaluate(ws, ys)
+
+
+# ---- former names, kept so that existing scripts keep working
+def amplification_many(ws, y, lens, estimate_error=False, **kw):
+    """Former name of amplification_spectrum (deprecated)."""
+    warnings.warn("amplification_many is now amplification_spectrum", DeprecationWarning, stacklevel=2)
+    return amplification_spectrum(ws, y, lens, estimate_error=estimate_error, **kw)
+
+
+def amplification_grid(ws, ys, lens, **kw):
+    """Former name of amplification_table (deprecated)."""
+    warnings.warn("amplification_grid is now amplification_table", DeprecationWarning, stacklevel=2)
+    return amplification_table(ws, ys, lens, **kw)

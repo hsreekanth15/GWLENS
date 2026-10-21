@@ -1838,43 +1838,106 @@ def _err_kw(s, kw):
 
 def amplification(w, y, lens, estimate_error=False, **kw):
     """
-    F(w, y) at one frequency with optional error estimation.
-    The function is comparitively slow for many frequencies or source positions; use amplification_many() or amplification_grid() instead
-    according to your use case. The amplification_many() is faster for many frequencies at one source position, while amplification_grid() is faster for many source positions at one frequency.
-    It supports all keywords of Solver1D, e.g. nlag, ngl, n_cheb, y_radius, threads, n_workers,interpolate etc.
+    F(w, y) for scalars or arrays, with numpy broadcasting: the result has the broadcast shape of w and
+    y, and one solver serves all points. The fastest path is chosen from the inputs:
+
+        amplification(0.5, 1.2, lens)                       one value
+        amplification(ws, 1.2, lens)                        many frequencies, one y  -> s.spectrum
+        amplification(0.5, ys, lens)                        one frequency, many y    -> s.profile
+        amplification(ws[None, :], ys[:, None], lens)       table (len(ys), len(ws)) -> s.evaluate
+        amplification(ws, ys, lens)                         pairs (ws[i], ys[i]), same shape
+
+    Pairs are grouped by the coordinate with fewer distinct values (one spectrum per distinct y, or
+    one profile per distinct w); if they fill most of a grid, the table is computed instead.
+    It supports all keywords of Solver1D, e.g. nlag, ngl, n_cheb, y_radius, threads, n_workers,
+    interpolate, and **PE_SETTINGS.
 
     Parameters:
     -----------
-    w : float
-        Frequency at which to compute the amplification factor.
-    y : float
-        Source position.
-    lens : callable
-        Lens model function.
+    w : float or array_like
+        Frequencies (w = 0 gives F = 1).
+    y : float or array_like
+        Source positions (|y| is used); broadcast against w.
+    lens : Potential or callable
+        Lens potential psi(x).
     estimate_error : bool, optional
-        If True, also returns an estimate of the error in the computed amplification factor.
+        If True, also returns |F - F'| with F' from a solver with more nodes and a farther split
+        (an estimate of the error, same shape as F).
     **kw : dict
-        Additional keyword arguments to pass to the Solver1D class.(See the Solver1D class for available options.)  
+        Keyword arguments of Solver1D (see the Solver1D class for available options).
 
-    Returns :
+    Returns:
     --------
-    Amplification factor F at the specified frequency. If estimate_error is True, also returns an estimate of the error in the computed amplification factor.
+    F with the broadcast shape of w and y (a complex scalar if both are scalars); with
+    estimate_error, the tuple (F, error).
     """
-    w = float(w)
-    if w == 0:
-        return (1.0 + 0j, 0.0) if estimate_error else 1.0 + 0j
-    with Solver1D(lens, y, w, w, **kw) as s:
-        F = s(w)
+    wb, yb = np.broadcast_arrays(np.asarray(w, dtype=float), np.abs(np.asarray(y, dtype=float)))
+    shape, wf, yf = wb.shape, wb.ravel(), yb.ravel()
+    pos = wf > 0
+    if not pos.any():
+        F = np.ones(shape, dtype=complex)
+        F, E = (F[()], np.zeros(shape)[()]) if shape == () else (F, np.zeros(shape))
+        return (F, E) if estimate_error else F
+    wlo, whi, yu = wf[pos].min(), wf[pos].max(), np.unique(yf[pos])
+    with _solver_for(lens, wlo, whi, yu, kw) as s:
+        F = _evaluate_pairs(s, wf, yf)
+    if estimate_error:
+        with _solver_for(lens, wlo, whi, yu, _err_kw(s, kw)) as s2:
+            E = np.abs(_evaluate_pairs(s2, wf, yf) - F)
+    F = F.reshape(shape)
+    if shape == ():
+        F = F[()]
     if not estimate_error:
         return F
-    with Solver1D(lens, y, w, w, **_err_kw(s, kw)) as s2:
-        return F, abs(s2(w) - F)
+    E = E.reshape(shape)
+    return F, (E[()] if shape == () else E)
 
 
-def amplification_many(ws, y, lens, estimate_error=False, **kw):
+def _solver_for(lens, wmin, wmax, ys, kw):
+    """One solver for the frequencies [wmin, wmax] and the (distinct, non-negative) source positions ys.
+    A y_radius in kw is kept if it is larger than needed."""
+    kw = dict(kw)
+    r_user = float(kw.pop("y_radius", 0.0))
+    if ys.size == 1 and r_user == 0:
+        return Solver1D(lens, float(ys[0]), wmin, wmax, **kw)
+    yc, R = _y_range(ys)
+    if ys.size == 1:
+        yc = float(ys[0])
+    return Solver1D(lens, yc, wmin, wmax, y_radius=max(R, r_user), **kw)
+
+
+def _evaluate_pairs(s, wf, yf):
+    """F at the pairs (wf[i], yf[i]) (flat arrays) with the solver s, by the cheapest path."""
+    out = np.ones(wf.size, dtype=complex)
+    pos = wf > 0
+    wq, yq = wf[pos], yf[pos]
+    uw, iw = np.unique(wq, return_inverse=True)
+    uy, iy = np.unique(yq, return_inverse=True)
+    if uy.size == 1:                                         # one source position: one spectrum
+        vals = s.spectrum(uw, uy[0])[iw]
+    elif uw.size == 1:                                       # one frequency: one profile
+        vals = s.profile(uw[0], uy)[iy]
+    elif uw.size * uy.size <= 4 * wq.size:                   # (nearly) a grid: the table
+        vals = s.evaluate(uw, uy)[iy, iw]
+    else:                                                    # scattered pairs
+        vals = np.empty(wq.size, dtype=complex)
+        if uy.size <= uw.size:
+            for k in range(uy.size):
+                sel = iy == k
+                vals[sel] = s.spectrum(wq[sel], uy[k])
+        else:
+            for k in range(uw.size):
+                sel = iw == k
+                vals[sel] = s.profile(uw[k], yq[sel])
+    out[pos] = vals
+    return out
+
+
+def amplification_spectrum(ws, y, lens, estimate_error=False, **kw):
     """
 
-    F on an array of frequencies for one source position (one solver, batched non-uniform FFTs)
+    F on an array of frequencies for one source position: the frequency spectrum of the amplification
+    (one solver, s.spectrum). Formerly amplification_many.
     It supports all keywords of Solver1D, e.g. nlag, ngl, n_cheb, y_radius, threads, n_workers,interpolate etc.
 
     Parameters:
@@ -1928,8 +1991,8 @@ def _y_range(ys):
 def amplification_profile(w, ys, lens, **kw):
 
     """
-    (May be we should call it amplification_many_y?)
-    F at one frequency for many source positions ys (any shape).
+    F at one frequency for many source positions ys (any shape): the profile of the amplification in y
+    (one solver, s.profile).
     It supports all keywords of Solver1D, e.g. nlag, ngl, n_cheb, y_radius, threads, n_workers,interpolate etc.
 
     Parameters:
@@ -1952,9 +2015,10 @@ def amplification_profile(w, ys, lens, **kw):
         return s.profile(w, ys)
 
 
-def amplification_grid(ws, ys, lens, **kw):
+def amplification_table(ws, ys, lens, **kw):
     """
-    Table F[k, m] = F(ws[m], ys[k]) for many frequencies and source positions.
+    Table F[k, m] = F(ws[m], ys[k]) for many frequencies and source positions (one solver,
+    s.evaluate). Formerly amplification_grid.
     Pass n_workers=None (all cores) or n_workers=k to compute the rows in parallel.
     It supports all keywords of Solver1D, e.g. nlag, ngl, n_cheb, y_radius, threads, n_workers,interpolate etc.
 
@@ -1981,3 +2045,16 @@ def amplification_grid(ws, ys, lens, **kw):
     yc, R = _y_range(ys)
     with Solver1D(lens, yc, wp.min(), wp.max(), y_radius=R, **kw) as s:
         return s.evaluate(ws, ys)
+
+
+# Old names with Deprecation warning
+def amplification_many(ws, y, lens, estimate_error=False, **kw):
+    """Former name of amplification_spectrum (deprecated)."""
+    warnings.warn("amplification_many is now amplification_spectrum", DeprecationWarning, stacklevel=2)
+    return amplification_spectrum(ws, y, lens, estimate_error=estimate_error, **kw)
+
+
+def amplification_grid(ws, ys, lens, **kw):
+    """Former name of amplification_table (deprecated)."""
+    warnings.warn("amplification_grid is now amplification_table", DeprecationWarning, stacklevel=2)
+    return amplification_table(ws, ys, lens, **kw)
