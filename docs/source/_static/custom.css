@@ -359,7 +359,7 @@ html[data-theme="dark"] :is(.danger, .error, .alert-danger) :is(.admonition-titl
    ACCENT SYSTEM: change --gw-accent-base and everything follows
    ===================================================================== */
 :root {
-  --gw-accent-base: #0f8f82;     /* <-- the ONE value to edit */
+  --gw-accent-base: #c026d3;     /* <-- the ONE value to edit */
 }
 
 /* light theme: derived colors */
