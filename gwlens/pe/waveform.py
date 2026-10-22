@@ -35,13 +35,14 @@ def _solver_module(solver):
     return module
 
 
+
 @dataclass(frozen=True)
 class LensModel:
     name: str
-    solver: str                  
-    build: object                 
+    solver: str                     # "1d" or "2d"
+    build: object                   # build(m, *shape_parameters) -> Potential / Lens
     shape_parameters: tuple = ()
-    axisymmetric: bool = True      
+    axisymmetric: bool = True       # source position y (True) or y1, y2
 
     @property
     def position_parameters(self):
@@ -94,27 +95,11 @@ LENS_MODELS = {
 
 
 def get_lens_model(lens_model, solver=None):
-    """
-    LensModel for a built-in name, path to a lens function, a lens function, or a
-    LensModel, computed with ``solver`` ("1d", "2d", or None/"auto" for the model's own).
-
-    Parameters:
-    -----------
-
-    lens_model : Callable
-
-    solver : str
-
-    Returns:
-    ---------
-    Returns lens model class
-    
-    """
+    """LensModel for a built-in name, a dotted path to a lens function, a lens function, or a
+    LensModel, computed with ``solver`` ("1d", "2d", or None/"auto" for the model's own)."""
     solver = None if solver in (None, "", "None", "auto") else str(solver).lower()
-
     if solver not in (None, "1d", "2d"):
         raise ValueError(f"lens solver must be '1d', '2d' or 'auto', not {solver!r}")
-    
     if isinstance(lens_model, LensModel):
         return lens_model.with_solver(solver)
     if callable(lens_model):
@@ -132,6 +117,7 @@ def get_lens_model(lens_model, solver=None):
         raise ValueError(f"lens model '{name}': give the solver type (lens_solver = '1d' or '2d')")
     shape = tuple(list(inspect.signature(build).parameters)[1:])
     return LensModel(name, solver, build, shape, axisymmetric=(solver == "1d"))
+
 
 
 
@@ -161,16 +147,25 @@ class LensingSettings:
     use_lookup_table: bool = False
     lookup_table: str = None
     ranges: dict = None
+    time_origin: str = None           
 
 
 def pop_lensing_settings(kwargs):
-    """
-    Remove the lens_* entries from a waveform-arguments dict and return them as settings.
-    """
+    """Remove the lens_* entries from a waveform-arguments dict and return them as settings."""
     raw = _coerce({k: kwargs.pop(k) for k in list(kwargs) if k.startswith("lens_")})
     return LensingSettings(raw.get("lens_model"), raw.get("lens_solver"),
                            bool(raw.get("lens_use_lookup_table") or False), raw.get("lens_lookup_table"),
-                           raw.get("lens_ranges"))
+                           raw.get("lens_ranges"), time_origin_setting(raw.get("lens_time_origin")))
+
+
+def time_origin_setting(value):
+    """None (T as it stands) or 'first_image', from what an ini or waveform arguments may hold."""
+    if value in (None, False) or str(value).strip().strip("'\"").lower() in ("", "none", "false", "0"):
+        return None
+    v = str(value).strip().strip("'\"").lower().replace("-", "_")
+    if v in ("first_image", "first", "minimum", "min"):
+        return "first_image"
+    raise ValueError(f"lens time origin must be 'none' or 'first_image', not {value!r}")
 
 
 
@@ -178,17 +173,17 @@ _SOLVERS = OrderedDict()
 _WARNED = set()
 
 
-def get_solver(model, params, w_range, box):
+def get_solver(model, params, w_range, box, time_origin=None):
     """Solver for one lens (fixed shape parameters), frequencies w_range and source region box;
     cached per process (the last 8)."""
     shape = tuple(float(params[k]) for k in model.shape_parameters)
-    key = (model.name, model.solver, shape, tuple(np.round(w_range, 12)), repr(box))
+    key = (model.name, model.solver, shape, tuple(np.round(w_range, 12)), repr(box), time_origin)
     if key in _SOLVERS:
         _SOLVERS.move_to_end(key)
         return _SOLVERS[key]
     m = _solver_module(model.solver)
     lens = model.make_lens(params)
-    kw = dict(m.PE_SETTINGS, n_workers=1, interpolate="auto", interp_tol=1e-6)
+    kw = dict(m.PE_SETTINGS, n_workers=1, interpolate="auto", interp_tol=1e-6, time_origin=time_origin)
     w_lo, w_hi = max(w_range[0], 1e-9 * w_range[1]), w_range[1]
     if model.solver == "1d":
         lo, hi = box
@@ -208,10 +203,15 @@ def _inside(pos, box):
     return bool(np.all((p >= b[:, 0] - 1e-9) & (p <= b[:, 1] + 1e-9)))
 
 
-def _from_solver(model, w, params, ranges):
+def _from_solver(model, w, params, ranges, time_origin=None):
     pos = model.position(params)
     w_range = (float(w.min()), float(w.max()))
+    single = (pos, pos) if model.solver == "1d" else ((pos[0], pos[0]), (pos[1], pos[1]))   # this position only
     box = None
+    if ranges and any(ranges[p][0] != ranges[p][1] for p in model.shape_parameters if p in ranges):
+        # sampled shape parameters: every call has a new lens, so its solver is never reused; build it for
+        # this source position and these frequencies only (several times cheaper than the whole prior region)
+        return np.conj(get_solver(model, params, w_range, single, time_origin).spectrum(w, pos))
     if ranges:
         W0, W1 = ranges["w"]
         if W0 * (1 - 1e-9) <= w_range[0] and w_range[1] <= W1 * (1 + 1e-9):
@@ -221,8 +221,8 @@ def _from_solver(model, w, params, ranges):
         if ranges and "range" not in _WARNED:
             _WARNED.add("range")
             logger.warning(f"GWLENS: source position {pos} outside lens_ranges: extra solver built")
-        box = (pos, pos) if model.solver == "1d" else ((pos[0], pos[0]), (pos[1], pos[1]))
-    return np.conj(get_solver(model, params, w_range, box).spectrum(w, pos))
+        box = single
+    return np.conj(get_solver(model, params, w_range, box, time_origin).spectrum(w, pos))
 
 
 
@@ -244,10 +244,11 @@ def _bspline_basis(t, k, x):
 
 
 class LookupTable:
-    """
-    F (LAL convention) on a grid (w, y) or (w, y1, y2), cubic spline in every axis.
+    """F (LAL convention) on a grid (w, y, ...) or (w, y1, y2, ...), cubic spline in every axis. The
+    axes after the source position are sampled shape parameters of the lens (e.g. rc); fixed ones
+    are attributes.
 
-    HDF5 file: w_values, y_values (or y1_values, y2_values), results (n_w, n_y, [n_y2,] 2) with real
+    HDF5 file: <axis>_values for every axis, results (n_w, n_y, [n_y2,] [n_shape, ...] 2) with real
     and imaginary parts; attributes 'axes' (default ["w", "y"]), 'lens_model', and the fixed shape
     parameters of the lens.
     """
@@ -309,11 +310,20 @@ def load_lookup_table(path):
     return LookupTable.load(path)
 
 
-def _from_table(model, w, params, path):
+def _from_table(model, w, params, path, time_origin=None):
     table = load_lookup_table(path)
+    made = time_origin_setting(table.attrs.get("time_origin"))
+    if made != time_origin:
+        raise ValueError(f"lookup table {path} was made with time origin {made or 'none'}, not "
+                         f"{time_origin or 'none'}; regenerate it (lensed-lookup-generation = True)")
     for name in model.shape_parameters:
-        if name in table.attrs and abs(float(table.attrs[name]) - float(params[name])) > 1e-6:
-            raise ValueError(f"lookup table {path} was made for {name} = {table.attrs[name]}, not {params[name]}")
+        if name in table.axes:                               # sampled: interpolated like y
+            continue
+        if name not in table.attrs:
+            raise ValueError(f"lookup table {path} has neither a fixed value nor an axis for {name}")
+        if abs(float(table.attrs[name]) - float(params[name])) > 1e-6:
+            raise ValueError(f"lookup table {path} was made for {name} = {table.attrs[name]}, not {params[name]}; "
+                             f"to sample {name}, generate a table with {name} in the prior range")
     p = dict(params)
     if model.axisymmetric:
         p["y"] = abs(float(p["y"]))
@@ -322,11 +332,9 @@ def _from_table(model, w, params, path):
 
 
 def amplification(frequency_array, lens_model, parameters, use_lookup_table=False, lookup_table=None,
-                  ranges=None, solver=None, minimum_frequency=None, maximum_frequency=None):
-    """
-    F(f) in the LAL convention (the waveform is multiplied by it); F = 1 outside
-    [minimum_frequency, maximum_frequency] (where LAL sets the waveform to zero anyway).
-    """
+                  ranges=None, solver=None, minimum_frequency=None, maximum_frequency=None, time_origin=None):
+    """F(f) in the LAL convention (the waveform is multiplied by it); F = 1 outside
+    [minimum_frequency, maximum_frequency] (where LAL sets the waveform to zero anyway)."""
     model = get_lens_model(lens_model, solver)
     f = np.asarray(frequency_array, dtype=float)
     F = np.ones(f.shape, dtype=complex)
@@ -339,10 +347,11 @@ def amplification(frequency_array, lens_model, parameters, use_lookup_table=Fals
         return F
     w = POINT_LENS_W_CONSTANT * float(parameters["MLz"]) * f[band]
     if use_lookup_table:
-        F[band] = _from_table(model, w, parameters, lookup_table)
+        F[band] = _from_table(model, w, parameters, lookup_table, time_origin)
     else:
-        F[band] = _from_solver(model, w, parameters, ranges)
+        F[band] = _from_solver(model, w, parameters, ranges, time_origin)
     return F
+
 
 
 def _base_function(base_model):
@@ -379,7 +388,7 @@ def lensed_source_model(model, base, settings):
             return None
         F = amplification(f, model, lens_params, settings.use_lookup_table, settings.lookup_table,
                           settings.ranges, None, waveform_kwargs.get("minimum_frequency"),
-                          waveform_kwargs.get("maximum_frequency"))
+                          waveform_kwargs.get("maximum_frequency"), settings.time_origin)
         return {key: value * F for key, value in pol.items()}
 
     source_model.__signature__ = sig
@@ -389,12 +398,12 @@ def lensed_source_model(model, base, settings):
 
 
 class LensedWaveformGenerator(WaveformGenerator):
-    """
-    bilby WaveformGenerator for any unlensed frequency-domain source model times F (see module doc).
+    """bilby WaveformGenerator for any unlensed frequency-domain source model times F (see module doc).
 
     lens_model        built-in name, dotted path to a lens function, or the function
     lens_solver       "1d", "2d" or None (the model's own)
     use_lookup_table  True: interpolate lookup_table; False: compute F with the solver
+    time_origin       None (T as it stands) or "first_image" (time from the first image's arrival)
     priors / ranges   region of the lens parameters ({parameter: [lo, hi], "w": [lo, hi]}); the solver is
                       built once for it. Without it, a solver is built for each new source position.
     Each can also be given in waveform_arguments with a lens_ prefix (as gwlens_pipe does).
@@ -404,20 +413,18 @@ class LensedWaveformGenerator(WaveformGenerator):
     def __init__(self, duration=None, sampling_frequency=None, start_time=0, frequency_domain_source_model=None,
                  time_domain_source_model=None, parameters=None, parameter_conversion=None,
                  waveform_arguments=None, lens_model=None, lens_solver=None, use_lookup_table=None,
-                 lookup_table=None, priors=None, ranges=None):
+                 lookup_table=None, priors=None, ranges=None, time_origin=None):
         wfa = dict(waveform_arguments or {})
-
         s = pop_lensing_settings(wfa)
         s.lens_model = lens_model if lens_model is not None else s.lens_model
         s.solver = lens_solver if lens_solver is not None else s.solver
         s.use_lookup_table = bool(use_lookup_table) if use_lookup_table is not None else s.use_lookup_table
         s.lookup_table = lookup_table if lookup_table is not None else s.lookup_table
-
+        s.time_origin = time_origin_setting(time_origin) if time_origin is not None else s.time_origin
         if s.lens_model is None:
             raise ValueError("LensedWaveformGenerator needs lens_model")
         if s.use_lookup_table and not s.lookup_table:
             raise ValueError("use_lookup_table=True needs lookup_table")
-        
         self.lens_model = get_lens_model(s.lens_model, s.solver)
         if priors is not None or ranges is not None:
             from .utils import lens_parameter_ranges
@@ -437,7 +444,7 @@ class LensedWaveformGenerator(WaveformGenerator):
             from bilby.gw.waveform_generator import LALCBCWaveformGenerator
             LALCBCWaveformGenerator.validate_reference_frequency(self)
 
-    def __getstate__(self):               
+    def __getstate__(self):                # picklable: the lens model is stored by name / function
         state = self.__dict__.copy()
         m = self.lens_model
         state["lens_model"] = (m.name if m.name in LENS_MODELS or "." in m.name else m.build, m.solver)

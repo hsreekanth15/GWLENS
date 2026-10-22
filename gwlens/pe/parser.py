@@ -21,6 +21,7 @@ def create_parser(top_level=True):
               help="If True, a lookup table will be used instead of using the solver directly")
     group.add("--lensed-lookup-generation", action=StoreBoolean, default=False,
               help="If True, a lookup table will be generated instead of the lookup-table provided")
+    group.add("--lens-time-origin", type=str, default="first_image", choices=["none","first_image"])
     group.add("--lens-lookup-table", type=nonestr, default=None,
               help="Path to amplification factor lookup-table in .hdf5 (generated from the prior range if "
                    "use-lookup-table is True and the file does not exist)")

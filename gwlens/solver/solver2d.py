@@ -10,28 +10,40 @@ from functools import partial
 import numpy as np
 from scipy.special import roots_legendre, roots_laguerre, expit
 try:
-    import finufft                 
+    import finufft                      # needed for fast many-frequency / many-position sums
 except ImportError:
     finufft = None
 try:
-    import numexpr as ne                
+    import numexpr as ne                # optional: faster elementwise work
 except ImportError:
     ne = None
 try:
-    from threadpoolctl import ThreadpoolController    
+    from threadpoolctl import ThreadpoolController    # optional: keeps BLAS on one thread in the sums
 except ImportError:
     ThreadpoolController = None
 
 _GL, _LAG = {}, {}
 
 
-
+# ================================================================== parallel helpers
+# Threads and processes
+#  * Building a solver: psi is evaluated on the grid by up to n_workers THREADS (numpy releases the
+#    GIL in its elementwise loops, so no processes, forking or shared memory are needed).
+#  * evaluate(ws, ys) with many rows: rows go to n_workers forked PROCESSES (one thread each).
+#  * One transform (a spectrum or a map): FINUFFT and numexpr threads (if threads > 1), but only where
+#    the arrays are large enough to gain (>= _PTS_PER_THREAD points per thread); BLAS stays on one.
+#    Several thread pools (OpenMP, numexpr, BLAS) alternating on the same cores is what made
+#    threads=None slower than one thread.
+# Processes are started with 'fork', so workers inherit the lens (which may hold lambdas) and the
+# finished grid without any pickling. Two rules keep this safe:
+#  * a forked process must not start OpenMP threads if its parent already did (GNU libgomp then
+#    deadlocks), so FINUFFT runs with one thread in every forked process;
+#  * worker processes never start processes of their own.
 _IMPORT_PID = os.getpid()
 _NE_SET = {}
 _WORKER = {}
 _TPC = {}
-_PTS_PER_THREAD = 250_000        
-  # a FINUFFT / numexpr thread pays off from ~this many points
+_PTS_PER_THREAD = 250_000          # a FINUFFT / numexpr thread pays off from ~this many points
 
 
 def available_cores():
@@ -147,7 +159,7 @@ def _unique_points(pts, tol=1e-12):
     return out
 
 
-#  lens objects
+# ================================================================== lens objects
 class Lens:
     """A lens potential psi(x1, x2) plus the list of its singular points.
 
@@ -223,7 +235,7 @@ class Lens:
         return mism
 
 
-# ready-made components
+# ------------------------------------------------------------------ ready-made components
 def point_mass(m=1.0, x0=(0.0, 0.0)):
     """psi = m ln|x - x0|."""
     a, b, m = float(x0[0]), float(x0[1]), float(m)
@@ -267,7 +279,7 @@ def external_shear(gamma1=0.0, gamma2=0.0, kappa=0.0):
     return Lens(f, singular=[], q_inf=k + np.hypot(g1, g2))
 
 
-# helpers
+# ================================================================== helpers
 def _step(s, s0, b=2.5):
     """C-infinity step: 1 for s <= s0, 0 for s >= 1.
     Planck taper 1/(1 + exp(b [1/(1-t) - 1/t])), t = (s - s0)/(1 - s0); b = 2.5 minimises the
@@ -402,13 +414,46 @@ def _bary_matrix(xc, xe):
 _WARNED = set()
 
 
+def _interp_mode(value, default):
+    """The interpolate setting as False, True or 'auto'. Also accepts what configuration files and ini
+    parsers pass on: the strings 'True' / 'False' / 'auto' / 'None' (any case or quoting), numpy booleans
+    and 0 / 1. None gives the solver's default."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        v = value.strip().strip("'\"").lower()
+        table = {"true": True, "false": False, "auto": "auto", "none": default, "1": True, "0": False}
+        if v in table:
+            return table[v]
+    elif isinstance(value, (bool, np.bool_, int, np.integer)) and value in (0, 1):
+        return bool(value)
+    raise ValueError(f"interpolate must be False, True or 'auto', not {value!r}")
+
+
+def _time_origin_mode(value):
+    """time_origin as None, 'first_image' or a float (strings from configuration files accepted)."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        v = value.strip().strip("'\"").lower().replace("-", "_")
+        if v in ("none", "", "0"):
+            return None
+        if v in ("first_image", "first", "minimum", "min"):
+            return "first_image"
+        try:
+            return float(v)
+        except ValueError:
+            raise ValueError(f"time_origin must be None, 'first_image' or a number, not {value!r}") from None
+    return float(value)
+
+
 def _warn_once(key, msg):
     if key not in _WARNED:
         _WARNED.add(key)
         warnings.warn(msg)
 
 
-# optional interpolation in w
+# ================================================================== optional interpolation in w
 def _interp_panels(w_lo, w_hi, B):
     """Panel edges on [w_lo, w_hi]: phase B*(width) <= 10 rad, width <= left end (geometric near w = 0)."""
     edges, a = [w_lo], w_lo
@@ -452,7 +497,7 @@ def _interp_eval(w, edges, G, xc):
     return out
 
 
-#  solver
+# ================================================================== the solver
 class Solver2D:
     """Lens grid for all source positions |y' - y| <= y_radius and all frequencies wmin <= w <= wmax.
 
@@ -507,6 +552,13 @@ class Solver2D:
                    pays from ~10^4-10^5 frequencies on.
       interp_tol   checked every call against exact values at a few frequencies (computed in the
                    same transform); panels are refined if the relative error exceeds it.
+
+    Time origin (the phase of F)
+      time_origin  None (default): T = |x - y|^2/2 - psi(x) as it stands, no time shift.
+                   'first_image': time measured from the arrival of the first image, i.e. F is multiplied
+                   by exp(-i w T_min(y)), T_min = first_image_delay(y) (the global minimum of T; GLoW's
+                   t_min). A number t0: F is multiplied by exp(-i w t0). Only the phase changes, by a
+                   term linear in w (a constant time shift).
     """
 
     def __init__(self, lens, y, wmin, wmax, y_radius=0.0, center="auto", patch_frac=0.8, patch_max=1.0,
@@ -514,14 +566,14 @@ class Solver2D:
                  bw_margin=32, xb_min=0.0, xb_base=2.0, n_transition=3, pou_density=16.0, map_ext=1.5,
                  nufft_eps=1e-14, low_band_ratio=4.0, max_chunk=2_000_000, tail_mode=None,
                  n_workers=1, threads=1, task_nodes=262_144, min_parallel_work=400_000,
-                 interpolate=False, interp_tol=1e-10):
+                 interpolate=False, interp_tol=1e-10, time_origin="first_image"):
         """See the class docstring."""
         if not lens._checked:
             lens.check_analytic()
-        if interpolate not in (False, True, "auto"):
-            raise ValueError("interpolate must be False, True or 'auto'")
-        self.interpolate, self.interp_tol = interpolate, float(interp_tol)
+        self.interpolate, self.interp_tol = _interp_mode(interpolate, False), float(interp_tol)
         self._tdgrid, self._tdcache = None, {}
+        self.time_origin = _time_origin_mode(time_origin)
+        self._tmincache, self._tmingrid = {}, None
         self.n_workers = available_cores() if (n_workers is None or n_workers <= 0) else int(n_workers)
         if threads is None or threads == "auto":
             self.threads = "auto"
@@ -544,13 +596,13 @@ class Solver2D:
         self.LX, self.LW = _lag(nlag)
         S = np.array(lens.singular, dtype=float).reshape(-1, 2)
 
-        #  patch radii (independent of the centre): each patch holds one singular point
+        # ---- patch radii (independent of the centre): each patch holds one singular point
         rho_of = []
         for k, p in enumerate(S):
             others = [np.hypot(*(p - q)) for j, q in enumerate(S) if j != k]
             rho_of.append(min(patch_max, patch_frac * min(others)) if others else patch_max)
 
-        #  split threshold (independent of the centre)
+        # ---- split threshold (independent of the centre)
         if lens.q_inf is not None:
             q = lens.q_inf
         else:
@@ -593,7 +645,7 @@ class Solver2D:
                 return out
             return chi0
 
-        # centre: a given point, the singular point nearest to y, or the cheapest candidate
+        # ---- centre: a given point, the singular point nearest to y, or the cheapest candidate
         costs = None
         if isinstance(center, str) and center == "nearest":
             c = S[np.argmin(np.hypot(*(S - self.y0).T))] if len(S) else np.zeros(2)
@@ -663,7 +715,7 @@ class Solver2D:
         regions += [dict(kind="patch", center=tuple(p), rho=rho, **P[1]) for (p, rho), P in zip(patches, plans[1:])]
         self.D_outer = plans[0][1]["D_outer"]
 
-        # plan the frequency bands: main (u_b = ub0) and geometric low bands (u_b = 20 / w_low)
+        # ---- plan the frequency bands: main (u_b = ub0) and geometric low bands (u_b = 20 / w_low)
         self.bands = []
         if self.wmax >= self.w_switch:
             self.bands.append(self._plan_band(max(self.wmin, self.w_switch), self.wmax, self.ub0, n_cheb))
@@ -676,7 +728,7 @@ class Solver2D:
                     break
                 hi = lo
 
-        # evaluate psi on every planned node and tail point (the expensive part; threads if allowed)
+        # ---- evaluate psi on every planned node and tail point (the expensive part; threads if allowed)
         groups = [[blk for P in plans for blk in P[0]]] + [b.pop("seg_blocks") for b in self.bands]
         filled, nthr = self._fill(groups, self.bands)
         self.hx1, self.hx2, self.hA, self.hW = filled[0]
@@ -690,7 +742,7 @@ class Solver2D:
                          setup_threads=nthr,
                          center_costs=None if costs is None else [(cc, float(v)) for v, cc in costs])
 
-    #  choice of the polar centre
+    # ------------------------------------------------------------------ choice of the polar centre
     def _center_cost(self, c, lay, S, rho_of, patch_cost, make_chi0, make_ang_req, s0):
         """Estimated work (head nodes + 2 x main-band tail points) with polar centre c. The patch costs
         do not depend on c and are cached in patch_cost."""
@@ -713,6 +765,7 @@ class Solver2D:
         n_cheb = 1 if self.wmax <= w_lo * (1 + 1e-12) else int(np.clip(14 + np.sqrt(self.wmax / w_lo), 16, 32))
         return n + 2.0 * n_dir * n_cheb * self.nlag
 
+    # ------------------------------------------------------------------ nodes of one polar region: the plan
     def _plan_nodes(self, c, Yabs, u_lo, u_hi, ug, V1, wtop, weight=None, touches=None, radial_weight=None,
                     extra_r=(), ang_req=None):
         """Radial nodes and angular counts of one polar region (psi is not evaluated on the grid here).
@@ -758,7 +811,7 @@ class Solver2D:
             blocks.append((np.asarray(c, dtype=float), xb_n, wb_n, N, weight if use_w else None))
         return blocks, dict(D_outer=D_outer, bands=bands)
 
-
+    # ------------------------------------------------------------------ psi on the planned nodes
     def _psi_job(self, X1, X2, A, s, e):
         """A[s:e] = |x|^2/2 - psi(x) on the head/segment nodes s..e-1."""
         with np.errstate(all="ignore"):
@@ -840,7 +893,7 @@ class Solver2D:
             filled.append((X1[m], X2[m], A[m], W[m]))
         return filled, nthr
 
-
+    # ------------------------------------------------------------------ frequency band: segment + tail plan
     def _plan_band(self, w_lo, w_hi, ub, n_cheb):
         lens, c = self.lens, self.c
         xb = np.sqrt(2 * ub)
@@ -1040,7 +1093,115 @@ class Solver2D:
         """F at an array of frequencies for one source position y (default: the centre).
         interpolate: None = the solver's setting; True / False / 'auto' (see the class docstring)."""
         with _blas_single():
-            return self._spectrum(ws, y, interpolate)
+            F = self._spectrum(ws, y, interpolate)
+        if self.time_origin is not None:
+            F = F * np.exp(-1j * np.atleast_1d(np.asarray(ws, dtype=float)) * self._t0(self._as_y(y)))
+        return F
+
+    def _t0(self, y):
+        """Time origin for source position(s) y, shape (..., 2) (see time_origin)."""
+        return self.first_image_delay(y) if self.time_origin == "first_image" else self.time_origin
+
+    def first_image_delay(self, y):
+        """
+        Time delay of the first image, T_min(y) = min over x of T(x) = |x - y|^2/2 - psi(x) (the global
+        minimum of the Fermat potential; GLoW's t_min), for source positions y of shape (2,) or (..., 2).
+        All local minima of T on a grid over |x - c| <= x_b (where every image lies) are refined by a
+        damped Newton iteration to rounding (gradient by the complex step, Hessian by central
+        differences of the gradient); the lowest is returned.
+        """
+        y = np.asarray(y, dtype=float)
+        shape = y.shape[:-1]
+        yf = y.reshape(-1, 2)
+        if yf.shape[0] == 1:
+            key = (float(yf[0, 0]), float(yf[0, 1]))
+            if key in self._tmincache:
+                return self._tmincache[key] if shape == () else np.full(shape, self._tmincache[key])
+        if self._tmingrid is None:
+            g = np.linspace(-self.xb0, self.xb0, 161)
+            X1, X2 = np.meshgrid(self.c[0] + g, self.c[1] + g, indexing="ij")
+            with np.errstate(all="ignore"):
+                ps = np.real(self.lens.psi(X1, X2))
+            self._tmingrid = (X1, X2, np.where(np.isfinite(ps), ps, np.nan))
+        X1, X2, ps = self._tmingrid
+        n = X1.shape[0]
+        out = np.empty(yf.shape[0])
+        step = max(1, 4_000_000 // X1.size)
+        for a in range(0, yf.shape[0], step):
+            yc = yf[a:a + step]
+            with np.errstate(all="ignore"):
+                T = 0.5 * ((X1[None] - yc[:, 0, None, None]) ** 2 + (X2[None] - yc[:, 1, None, None]) ** 2) - ps[None]
+            T = np.where(np.isfinite(T), T, np.inf)
+            C = T[:, 1:-1, 1:-1]
+            m = np.isfinite(C)
+            for di in (-1, 0, 1):
+                for dj in (-1, 0, 1):
+                    if di or dj:
+                        m &= C <= T[:, 1 + di:n - 1 + di, 1 + dj:n - 1 + dj]
+            k, i, j = np.nonzero(m)
+            if k.size == 0 or np.unique(k).size < yc.shape[0]:      # no interior minimum: lowest grid point
+                flat = T.reshape(yc.shape[0], -1).argmin(axis=1)
+                k = np.concatenate([k, np.arange(yc.shape[0])])
+                i = np.concatenate([i, flat // n - 1]); j = np.concatenate([j, flat % n - 1])
+            x1, x2, Tm = self._refine_min(X1[i + 1, j + 1], X2[i + 1, j + 1], yc[k, 0], yc[k, 1])
+            best = np.full(yc.shape[0], np.inf)
+            np.minimum.at(best, k, Tm)
+            out[a:a + step] = best
+        if yf.shape[0] == 1:
+            if len(self._tmincache) > 256:
+                self._tmincache.clear()
+            self._tmincache[(float(yf[0, 0]), float(yf[0, 1]))] = float(out[0])
+        return float(out[0]) if shape == () else out.reshape(shape)
+
+    def _refine_min(self, x1, x2, y1, y2):
+        """Damped Newton iteration for minima of T(x) = |x - y|^2/2 - psi(x) from starts (x1, x2)."""
+        lens = self.lens
+        x1, x2 = np.array(x1, dtype=float), np.array(x2, dtype=float)
+
+        def T(a, b, ya, yb):
+            with np.errstate(all="ignore"):
+                v = 0.5 * ((a - ya) ** 2 + (b - yb) ** 2) - np.real(lens.psi(a, b))
+            return np.where(np.isfinite(v), v, np.inf)
+
+        T0 = T(x1, x2, y1, y2)
+        active = np.isfinite(T0)
+        for _ in range(50):
+            if not active.any():
+                break
+            a, b, ya, yb = x1[active], x2[active], y1[active], y2[active]
+            with np.errstate(all="ignore"):
+                g1, g2 = lens.grad(a, b)
+                G1, G2 = a - ya - g1, b - yb - g2
+                h = 1e-6 * (1.0 + np.hypot(a, b))
+                p1a, p2a = lens.grad(a + h, b)
+                p1b, p2b = lens.grad(a - h, b)
+                q1a, q2a = lens.grad(a, b + h)
+                q1b, q2b = lens.grad(a, b - h)
+                H11 = 1 - (p1a - p1b) / (2 * h)
+                H22 = 1 - (q2a - q2b) / (2 * h)
+                H12 = -0.25 * ((p2a - p2b) + (q1a - q1b)) / h
+                det = H11 * H22 - H12 * H12
+                s1 = (H22 * G1 - H12 * G2) / det
+                s2 = (H11 * G2 - H12 * G1) / det
+            newton = np.isfinite(s1) & np.isfinite(s2) & (det > 0) & (H11 > 0)
+            s1 = np.where(newton, s1, 0.1 * G1)
+            s2 = np.where(newton, s2, 0.1 * G2)
+            Ta = T0[active]
+            lam = np.ones(a.size)
+            na, nb = a - s1, b - s2
+            Tn = T(na, nb, ya, yb)
+            for _ in range(30):                               # backtracking: T must not increase
+                worse = Tn > Ta + 1e-15 * np.abs(Ta)
+                if not worse.any():
+                    break
+                lam = np.where(worse, 0.5 * lam, lam)
+                na, nb = a - lam * s1, b - lam * s2
+                Tn = np.where(worse, T(na, nb, ya, yb), Tn)
+            done = (np.hypot(G1, G2) < 1e-13) | (np.hypot(lam * s1, lam * s2) < 1e-15 * (1 + np.hypot(a, b)))
+            idx = np.nonzero(active)[0]
+            x1[idx], x2[idx], T0[idx] = na, nb, np.minimum(Tn, Ta)
+            active[idx[done]] = False
+        return x1, x2, T(x1, x2, y1, y2)
 
     def _spectrum(self, ws, y=None, interpolate=None):
         ws = np.atleast_1d(np.asarray(ws, dtype=float))
@@ -1052,7 +1213,7 @@ class Solver2D:
         if wp.size == 0:
             return F
         self._check_w(wp)
-        mode = self.interpolate if interpolate is None else interpolate
+        mode = self.interpolate if interpolate is None else _interp_mode(interpolate, self.interpolate)
         if mode and wp.size >= 64:
             Fi = self._spectrum_interp(wp, y, auto=(mode == "auto"))
             if Fi is not None:
@@ -1208,6 +1369,8 @@ class Solver2D:
         X1.append((c[0] + np.outer(ct, rad)).ravel()); X2.append((c[1] + np.outer(st, rad)).ravel()); C.append(gam.ravel())
         out = self._sum_y(np.concatenate(X1), np.concatenate(X2), np.concatenate(C), w * y1, w * y2)
         F = w / (2j * np.pi) * np.exp(0.5j * w * (y1 * y1 + y2 * y2)) * out
+        if self.time_origin is not None:
+            F = F * np.exp(-1j * w * self._t0(np.stack([y1, y2], axis=-1)))
         return F.reshape(shape)
 
     def evaluate(self, ws, ys):

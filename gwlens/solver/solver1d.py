@@ -1,3 +1,4 @@
+
 import os
 import math
 import time
@@ -613,6 +614,39 @@ def _blas_single():
         return nullcontext()
 
 
+def _interp_mode(value, default):
+    """The interpolate setting as False, True or 'auto'. Also accepts what configuration files and ini
+    parsers pass on: the strings 'True' / 'False' / 'auto' / 'None' (any case or quoting), numpy booleans
+    and 0 / 1. None gives the solver's default."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        v = value.strip().strip("'\"").lower()
+        table = {"true": True, "false": False, "auto": "auto", "none": default, "1": True, "0": False}
+        if v in table:
+            return table[v]
+    elif isinstance(value, (bool, np.bool_, int, np.integer)) and value in (0, 1):
+        return bool(value)
+    raise ValueError(f"interpolate must be False, True or 'auto', not {value!r}")
+
+
+def _time_origin_mode(value):
+    """time_origin as None, 'first_image' or a float (strings from configuration files accepted)."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        v = value.strip().strip("'\"").lower().replace("-", "_")
+        if v in ("none", "", "0"):
+            return None
+        if v in ("first_image", "first", "minimum", "min"):
+            return "first_image"
+        try:
+            return float(v)
+        except ValueError:
+            raise ValueError(f"time_origin must be None, 'first_image' or a number, not {value!r}") from None
+    return float(value)
+
+
 _WARNED = set()
 
 
@@ -744,6 +778,13 @@ class Solver1D:
                    max(1e-10, 100 nufft_eps), i.e. above the accuracy of the exact values (1e-7 with
                    PE_SETTINGS).
 
+    Time origin (the phase of F)
+      time_origin  None (default): T = |x - y|^2/2 - psi(x) as it stands, no time shift.
+                   'first_image': time measured from the arrival of the first image, i.e. F is multiplied
+                   by exp(-i w T_min(y)), T_min = first_image_delay(y) (the phi_m(y) of Takahashi &
+                   Nakamura 2003 for the point mass). A number t0: F is multiplied by exp(-i w t0).
+                   Only the phase changes, by a term linear in w (a constant time shift).
+
     Parallelism
       n_workers   maximum number of processes for evaluate() (1: none; None: all cores); used only
                   when timing of the first rows predicts a clear gain. close() stops the pool.
@@ -845,7 +886,7 @@ class Solver1D:
 
     def __init__(self, lens, y=0.0, wmin=1e-3, wmax=1e3, y_radius=0.0, cycles=8, ngl=32, nlag=30, n_cheb=18,
                  band_ratio=8.0, xb_min=0.0, nufft_eps=1e-14, z_small=1.0, n_workers=1, threads=None,
-                 interpolate=True, interp_tol=None, adaptive_gl=True):
+                 interpolate=True, interp_tol=None, adaptive_gl=True, time_origin="first_image"):
         """
         Initialize the 1D lensing solver.
 
@@ -891,10 +932,9 @@ class Solver1D:
 
         self.threads = None if threads is None else max(1, int(threads))
 
-        if interpolate not in (False, True, "auto"):
-            raise ValueError("interpolate must be False, True or 'auto'")
-        
-        self.interpolate = interpolate
+        self.interpolate = _interp_mode(interpolate, True)
+        self.time_origin = _time_origin_mode(time_origin)
+        self._tmincache = {}
         self.interp_tol = max(1e-10, 100 * self.nufft_eps) if interp_tol is None else float(interp_tol)
         self.adaptive_gl = bool(adaptive_gl)
         self._tdcache = {}
@@ -1528,15 +1568,84 @@ class Solver1D:
         if wp.size == 0:
             return F
         self._check_w(wp)
-        mode = self.interpolate if interpolate is None else interpolate
+        mode = self.interpolate if interpolate is None else _interp_mode(interpolate, self.interpolate)
         with _blas_single():
-            if mode and wp.size >= 64:
-                Fi = self._spectrum_interp(wp, y, auto=(mode == "auto"))
-                if Fi is not None:
-                    F[pos] = Fi
-                    return F
-            F[pos] = self._spectrum_exact(wp, y)
+            Fi = self._spectrum_interp(wp, y, auto=(mode == "auto")) if (mode and wp.size >= 64) else None
+            F[pos] = self._spectrum_exact(wp, y) if Fi is None else Fi
+        if self.time_origin is not None:
+            F[pos] *= np.exp(-1j * wp * self._t0(y))
         return F
+
+    def _t0(self, y):
+        """Time origin for source position(s) y (see time_origin)."""
+        return self.first_image_delay(y) if self.time_origin == "first_image" else self.time_origin
+
+    def first_image_delay(self, y):
+        """
+        Time delay of the first image, T_min(y) = min over s of T(s) = (s - y)^2/2 - psi(|s|) on the lens
+        axis (the global minimum of the Fermat potential), for a source position or an array of them.
+        It is phi_m(y) of Takahashi & Nakamura (2003) for the point mass. Start at the lowest point of a
+        grid in |s| on both sides of the lens, then safeguarded Newton iteration on T'(s) = 0 to rounding
+        (psi' by the complex step, psi'' by central differences of psi').
+        """
+        y = np.abs(np.asarray(y, dtype=float))
+        shape, yf = y.shape, y.ravel()
+        if yf.size == 1 and float(yf[0]) in self._tmincache:
+            return self._tmincache[float(yf[0])] if shape == () else np.full(shape, self._tmincache[float(yf[0])])
+        x, ps = self._td_grid()[:2]
+        out = np.empty(yf.size)
+        step = max(1, 4_000_000 // x.size)
+        for a in range(0, yf.size, step):
+            yc = yf[a:a + step, None]
+            with np.errstate(all="ignore"):
+                Tp = 0.5 * (x[None, :] - yc) ** 2 - ps[None, :]           # s = +|s| (source side)
+                Tm = 0.5 * (x[None, :] + yc) ** 2 - ps[None, :]           # s = -|s|
+            Tp = np.where(np.isfinite(Tp), Tp, np.inf)
+            Tm = np.where(np.isfinite(Tm), Tm, np.inf)
+            ip, im = np.argmin(Tp, axis=1), np.argmin(Tm, axis=1)
+            r = np.arange(yc.shape[0])
+            side = np.where(Tp[r, ip] <= Tm[r, im], 1.0, -1.0)
+            i = np.where(side > 0, ip, im)
+            out[a:a + step] = self._refine_min(x, i, side, yc[:, 0], np.minimum(Tp[r, ip], Tm[r, im]))
+        if yf.size == 1:
+            if len(self._tmincache) > 256:
+                self._tmincache.clear()
+            self._tmincache[float(yf[0])] = float(out[0])
+        return float(out[0]) if shape == () else out.reshape(shape)
+
+    def _refine_min(self, x, i, side, y, T_grid):
+        """Minimum of T(x) = (x - side y)^2/2 - psi(x) near grid point x[i] (bracket x[i-1], x[i+1])."""
+        lens = self.lens
+        n = x.size
+        inner = (i > 0) & (i < n - 1)
+        lo, hi = x[np.clip(i - 1, 0, n - 1)], x[np.clip(i + 1, 0, n - 1)]
+        dT = lambda z: z - side * y - lens.dpsi(z)
+        with np.errstate(all="ignore"):
+            ok = inner & (dT(lo) < 0) & (dT(hi) > 0)
+        z = x[i].astype(float).copy()
+        if ok.any():
+            zl, zh, zz, sy = lo[ok], hi[ok], z[ok], (side * y)[ok]
+            for _ in range(60):
+                g = zz - sy - lens.dpsi(zz)
+                h = 1e-6 * zz
+                d2 = 1.0 - (lens.dpsi(zz + h) - lens.dpsi(zz - h)) / (2 * h)
+                neg = g < 0
+                zl = np.where(neg, zz, zl)
+                zh = np.where(neg, zh, zz)
+                with np.errstate(all="ignore"):
+                    zn = zz - g / d2
+                bad = ~np.isfinite(zn) | (zn < zl) | (zn > zh)       # g = 0 gives zn = zz = zl or zh: done
+                zn = np.where(bad, 0.5 * (zl + zh), zn)
+                done = (np.abs(zn - zz) <= 4e-16 * zz) | (zh - zl <= 4e-16 * zz)
+                zz = zn
+                if done.all():
+                    break
+            z[ok] = zz
+        T = 0.5 * (z - side * y) ** 2 - lens.real(z)
+        if not ok.all():
+            _warn_once("tmin", "first_image_delay: minimum of T at the edge of the search grid; grid value used")
+            T = np.where(ok, T, T_grid)
+        return T
 
     def _spectrum_exact(self, wp, y):
         total = np.empty(wp.size, dtype=complex)
@@ -1567,14 +1676,10 @@ class Solver1D:
             total[sel] = v
         return -1j * wp * np.exp(0.5j * wp * y * y) * total
 
-   #optional interpolation in w
-    def _time_delay_range(self, y):
-        """(T_min, T_max) of the Fermat potential T(s) = (s - y)^2/2 - psi(|s|) on the lens axis at the
-        real images, at the points where images merge (caustics) and at s = 0 if psi(0) is finite.
-        F(w) oscillates in w only through exp(i w T) at these times (plus smooth terms)."""
-        if y in self._tdcache:
-            return self._tdcache[y]
-        if self._tdgrid is None:                             # y-independent part, once per solver
+    def _td_grid(self):
+        """y-independent grid on the lens axis (|s|, psi, lens-equation function g, caustics, core),
+        computed once per solver."""
+        if self._tdgrid is None:
             lens = self.lens
             xmax = 1.5 * max(self.xb0, 2 * self.y_hi + 2)
             x = np.unique(np.concatenate([np.geomspace(1e-6, 1.0, 600), np.linspace(1.0, xmax, 1200)]))
@@ -1586,7 +1691,16 @@ class Solver1D:
             ext = np.nonzero(np.isfinite(dg[:-1]) & np.isfinite(dg[1:]) & (np.sign(dg[:-1]) != np.sign(dg[1:])))[0] + 1
             core = p0[0] if (np.all(np.isfinite(p0)) and abs(p0[0] - p0[1]) < 1e-6 * (1 + abs(p0[0]))) else None
             self._tdgrid = (x, ps, g, ext, core)
-        x, ps, g, ext, core = self._tdgrid
+        return self._tdgrid
+
+   #optional interpolation in w
+    def _time_delay_range(self, y):
+        """(T_min, T_max) of the Fermat potential T(s) = (s - y)^2/2 - psi(|s|) on the lens axis at the
+        real images, at the points where images merge (caustics) and at s = 0 if psi(0) is finite.
+        F(w) oscillates in w only through exp(i w T) at these times (plus smooth terms)."""
+        if y in self._tdcache:
+            return self._tdcache[y]
+        x, ps, g, ext, core = self._td_grid()
         Ts = []
         with np.errstate(all="ignore"):
             for sgn in (1.0, -1.0):                          # image side (s > 0) and opposite side
@@ -1763,6 +1877,8 @@ class Solver1D:
         b = self.bands[self._band_index(np.array([w]))[0]]
         with _blas_single():
             F = -1j * w * np.exp(0.5j * w * yr * yr) * (self._head_direct(b, yr, w) + self._tail_direct(b, yr, w))
+        if self.time_origin is not None:
+            F = F * np.exp(-1j * w * self._t0(yr))
         return F.reshape(shape)
 
     def evaluate(self, ws, ys):
@@ -2047,7 +2163,8 @@ def amplification_table(ws, ys, lens, **kw):
         return s.evaluate(ws, ys)
 
 
-# Old names with Deprecation warning
+#former names, kept so that existing scripts keep working
+#Have to change in the documentation
 def amplification_many(ws, y, lens, estimate_error=False, **kw):
     """Former name of amplification_spectrum (deprecated)."""
     warnings.warn("amplification_many is now amplification_spectrum", DeprecationWarning, stacklevel=2)
