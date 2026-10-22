@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.abspath("../.."))
 project = 'GWLENS'
 copyright = '2026'
 author = 'Sreekanth Harikumar'
+copyright = f'2026, {author}'
 release = '0.1'
 
 # -- General configuration ---------------------------------------------------
@@ -31,7 +32,7 @@ extensions = [
 myst_enable_extensions = ["colon_fence", "dollarmath", "amsmath"]  # lets sphinx_design use ::: fences in .md
 
 templates_path = ['_templates']
-exclude_patterns = ['_build', 'Thumbs.db', '**.ipynb_checkpoints']
+exclude_patterns = ['_build', 'Thumbs.db', '**.ipynb_checkpoints','examples/animations.ipynb']
 napoleon_numpy_docstring = True
 napoleon_google_docstring = False
 
@@ -41,6 +42,7 @@ autodoc_mock_imports = ['mpi4py', 'bilby', 'bilby_pipe', 'gwcosmo',
 
 # Show the outputs saved in notebooks; don't re-run them during the build
 nbsphinx_execute = 'never'
+nbsphinx_codecell_lexer = "python3"
 
 # -- Options for HTML output -------------------------------------------------
 html_theme = 'sphinx_rtd_theme'
@@ -51,7 +53,6 @@ html_theme_options = {
     "navigation_depth": 4,
     "sticky_navigation": True,
     "titles_only": False,
-    "display_version": True,
 }
 html_css_files = ['custom.css']
 html_js_files = ['custom.js', 'page-toc.js']

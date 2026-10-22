@@ -12,10 +12,10 @@ Msun = 1.988e30
 constant = (8 * np.pi * G / c**3) * Msun
 
 class CWPE:
-    "
-    A lensed waveform generator class of continuos waves
+    """
+    A lensed waveform generator class of continuous waves
 
-    "
+    """
     def __init__(self,time):
         """
         Time array, always need to be the first argument for bilby 
