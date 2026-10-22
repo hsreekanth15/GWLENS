@@ -28,6 +28,7 @@ docs = [
     "sphinx-copybutton",
     "sphinx_design",
     "nbsphinx",
+    "ipython",
     "pandoc",
     "sphinx-autobuild>=2024.2.4",
 ]
