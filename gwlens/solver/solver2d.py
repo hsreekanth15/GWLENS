@@ -10,40 +10,27 @@ from functools import partial
 import numpy as np
 from scipy.special import roots_legendre, roots_laguerre, expit
 try:
-    import finufft                      # needed for fast many-frequency / many-position sums
-except ImportError:
+    import finufft                      
+except ImportError:                    
     finufft = None
 try:
-    import numexpr as ne                # optional: faster elementwise work
+    import numexpr as ne              
 except ImportError:
     ne = None
 try:
-    from threadpoolctl import ThreadpoolController    # optional: keeps BLAS on one thread in the sums
+    from threadpoolctl import ThreadpoolController  
 except ImportError:
     ThreadpoolController = None
 
 _GL, _LAG = {}, {}
 
 
-# ================================================================== parallel helpers
-# Threads and processes
-#  * Building a solver: psi is evaluated on the grid by up to n_workers THREADS (numpy releases the
-#    GIL in its elementwise loops, so no processes, forking or shared memory are needed).
-#  * evaluate(ws, ys) with many rows: rows go to n_workers forked PROCESSES (one thread each).
-#  * One transform (a spectrum or a map): FINUFFT and numexpr threads (if threads > 1), but only where
-#    the arrays are large enough to gain (>= _PTS_PER_THREAD points per thread); BLAS stays on one.
-#    Several thread pools (OpenMP, numexpr, BLAS) alternating on the same cores is what made
-#    threads=None slower than one thread.
-# Processes are started with 'fork', so workers inherit the lens (which may hold lambdas) and the
-# finished grid without any pickling. Two rules keep this safe:
-#  * a forked process must not start OpenMP threads if its parent already did (GNU libgomp then
-#    deadlocks), so FINUFFT runs with one thread in every forked process;
-#  * worker processes never start processes of their own.
+
 _IMPORT_PID = os.getpid()
 _NE_SET = {}
 _WORKER = {}
 _TPC = {}
-_PTS_PER_THREAD = 250_000          # a FINUFFT / numexpr thread pays off from ~this many points
+_PTS_PER_THREAD = 250_000         
 
 
 def available_cores():
@@ -80,8 +67,10 @@ def _set_ne_threads(n):
 
 
 def _blas_single():
-    """Context in which BLAS runs on one thread. The matrix products of a spectrum or a map are small;
-    a multithreaded BLAS between FINUFFT calls only competes with FINUFFT's own threads."""
+    """
+    Context in which BLAS runs on one thread. The matrix products of a spectrum or a map are small;
+    a multithreaded BLAS between FINUFFT calls only competes with FINUFFT's own threads.
+    """
     if ThreadpoolController is None:
         return nullcontext()
     pid = os.getpid()
@@ -159,7 +148,7 @@ def _unique_points(pts, tol=1e-12):
     return out
 
 
-# ================================================================== lens objects
+
 class Lens:
     """A lens potential psi(x1, x2) plus the list of its singular points.
 
@@ -235,7 +224,7 @@ class Lens:
         return mism
 
 
-# ------------------------------------------------------------------ ready-made components
+
 def point_mass(m=1.0, x0=(0.0, 0.0)):
     """psi = m ln|x - x0|."""
     a, b, m = float(x0[0]), float(x0[1]), float(m)
@@ -249,8 +238,10 @@ def sis(psi0=1.0, x0=(0.0, 0.0)):
 
 
 def cis(psi0=1.0, rc=0.05, x0=(0.0, 0.0)):
-    """Cored isothermal sphere (GLoW convention): psi0 [s + rc ln(2 rc/(s + rc))], s = sqrt(R^2 + rc^2).
-    The centre is listed as a singular point so that a small core is resolved like a cusp."""
+    """
+    Cored isothermal sphere (GLoW convention): psi0 [s + rc ln(2 rc/(s + rc))], s = sqrt(R^2 + rc^2).
+    The centre is listed as a singular point so that a small core is resolved like a cusp.
+    """
     a, b, p, rc = float(x0[0]), float(x0[1]), float(psi0), float(rc)
 
     def f(x1, x2):
@@ -279,11 +270,15 @@ def external_shear(gamma1=0.0, gamma2=0.0, kappa=0.0):
     return Lens(f, singular=[], q_inf=k + np.hypot(g1, g2))
 
 
-# ================================================================== helpers
+# Planck Taper window
 def _step(s, s0, b=2.5):
-    """C-infinity step: 1 for s <= s0, 0 for s >= 1.
+    """
+    C-infinity step: 1 for s <= s0, 0 for s >= 1.
     Planck taper 1/(1 + exp(b [1/(1-t) - 1/t])), t = (s - s0)/(1 - s0); b = 2.5 minimises the
-    number of Fourier modes (hence trapezoid angles) needed to resolve it to ~1e-12."""
+    number of Fourier modes (hence trapezoid angles) needed to resolve it to ~1e-12.
+
+    From Sathyaprakash's paper, not using this taper introduced some edge artifacts.
+    """
     t = np.clip((np.asarray(s, dtype=float) - s0) / (1.0 - s0), 0.0, 1.0)
     inner = (t > 0) & (t < 1)
     tt = np.where(inner, t, 0.5)
@@ -315,8 +310,10 @@ def _split_radius(lens, c, yc0, Re, thr, xb):
 
 def _region_cost(lens, c, Y, r_out, wmax, ngl, cycles, bw_factor, bw_margin, u_floor, weight=None,
                  ang_req=None, n_oct=12, n_ang=32):
-    """Rough number of head nodes of a polar region of radius r_out about c (the same rules as
-    _plan_nodes, with psi sampled on one ring per octave). Only used to compare candidate centres."""
+    """
+    Rough number of head nodes of a polar region of radius r_out about c (the same rules as
+    _plan_nodes, with psi sampled on one ring per octave). Only used to compare candidate centres.
+    """
     r_e = r_out * 2.0 ** -np.arange(n_oct, -1, -1)
     th = (np.arange(n_ang) + 0.5) * 2 * np.pi / n_ang
     R, TH = np.meshgrid(r_e, th, indexing="ij")
@@ -342,7 +339,6 @@ def _region_cost(lens, c, Y, r_out, wmax, ngl, cycles, bw_factor, bw_margin, u_f
 
 
 
-# ================================================================== grid building blocks
 # Resolution of the two planning probes (they only size the grid; psi on the grid is exact). The
 # previous values (64 directions, >= 1500 + 3000 radii; 256 x 8 points per octave) cost 30-50 % of a
 # build with PE_SETTINGS and gave the same grids to within a few nodes.
@@ -453,9 +449,11 @@ def _warn_once(key, msg):
         warnings.warn(msg)
 
 
-# ================================================================== optional interpolation in w
+
 def _interp_panels(w_lo, w_hi, B):
-    """Panel edges on [w_lo, w_hi]: phase B*(width) <= 10 rad, width <= left end (geometric near w = 0)."""
+    """
+    Panel edges on [w_lo, w_hi]: phase B*(width) <= 10 rad, width <= left end (geometric near w = 0).
+    """
     edges, a = [w_lo], w_lo
     while a < w_hi * (1 - 1e-14):
         h = min(10.0 / B if B > 0 else np.inf, a, w_hi - a)
@@ -465,8 +463,10 @@ def _interp_panels(w_lo, w_hi, B):
 
 
 def _interp_eval(w, edges, G, xc):
-    """Evaluate the panel-wise Chebyshev interpolant (values G[panel, node] at the points xc) at w:
-    Chebyshev coefficients per panel, then T_k(t) by recurrence on the sorted targets of each panel."""
+    """
+    Evaluate the panel-wise Chebyshev interpolant (values G[panel, node] at the points xc) at w:
+    Chebyshev coefficients per panel, then T_k(t) by recurrence on the sorted targets of each panel.
+    """
     n = xc.size
     Tm = np.cos(np.outer(np.arange(n), np.pi * (np.arange(n) + 0.5) / n))
     coef = (2.0 / n) * G @ Tm.T
@@ -497,16 +497,16 @@ def _interp_eval(w, edges, G, xc):
     return out
 
 
-# ================================================================== the solver
-class Solver2D:
-    """Lens grid for all source positions |y' - y| <= y_radius and all frequencies wmin <= w <= wmax.
 
-    lens          a Lens (see module docstring)
+class Solver2D:
+    """
+    lens          a Lens (see module docstring or the documentation on how to use this)
     y             centre of the source region (with y_radius = 0: the source position)
     wmin, wmax    frequency range the grid must resolve
     y_radius      radius of the source region (0: a single source position)
 
     Evaluation (all reuse the same grid; psi is never evaluated again for the head):
+
       s(w, y=None)            F at one frequency, one source position (default: the centre)
       s.spectrum(ws, y=None)  many frequencies, one source position     -> 1D non-uniform FFT
       s.map(w, Y1, Y2)        one frequency, many source positions       -> 2D non-uniform FFT
@@ -526,7 +526,7 @@ class Solver2D:
     nufft_eps (FINUFFT tolerance; default 1e-14 gives ~1e-12 in F),
     low_band_ratio (width of the geometric frequency bands below w = 20/u_b).
 
-    Parallelism
+    Parallelliszing 
       n_workers   1 (default), k, or None (all cores). Building the solver: psi is evaluated on the
                   grid by up to n_workers THREADS (worth it for large grids or expensive potentials).
                   evaluate(ws, ys): rows are computed by up to n_workers forked PROCESSES when there
@@ -567,7 +567,7 @@ class Solver2D:
                  nufft_eps=1e-14, low_band_ratio=4.0, max_chunk=2_000_000, tail_mode=None,
                  n_workers=1, threads=1, task_nodes=262_144, min_parallel_work=400_000,
                  interpolate=False, interp_tol=1e-10, time_origin="first_image"):
-        """See the class docstring."""
+        """See the class docstring formore details"""
         if not lens._checked:
             lens.check_analytic()
         self.interpolate, self.interp_tol = _interp_mode(interpolate, False), float(interp_tol)
@@ -742,7 +742,7 @@ class Solver2D:
                          setup_threads=nthr,
                          center_costs=None if costs is None else [(cc, float(v)) for v, cc in costs])
 
-    # ------------------------------------------------------------------ choice of the polar centre
+    # choice of the polar centre
     def _center_cost(self, c, lay, S, rho_of, patch_cost, make_chi0, make_ang_req, s0):
         """Estimated work (head nodes + 2 x main-band tail points) with polar centre c. The patch costs
         do not depend on c and are cached in patch_cost."""
@@ -765,7 +765,7 @@ class Solver2D:
         n_cheb = 1 if self.wmax <= w_lo * (1 + 1e-12) else int(np.clip(14 + np.sqrt(self.wmax / w_lo), 16, 32))
         return n + 2.0 * n_dir * n_cheb * self.nlag
 
-    # ------------------------------------------------------------------ nodes of one polar region: the plan
+    # nodes of one polar region: the plan
     def _plan_nodes(self, c, Yabs, u_lo, u_hi, ug, V1, wtop, weight=None, touches=None, radial_weight=None,
                     extra_r=(), ang_req=None):
         """Radial nodes and angular counts of one polar region (psi is not evaluated on the grid here).
@@ -811,7 +811,7 @@ class Solver2D:
             blocks.append((np.asarray(c, dtype=float), xb_n, wb_n, N, weight if use_w else None))
         return blocks, dict(D_outer=D_outer, bands=bands)
 
-    # ------------------------------------------------------------------ psi on the planned nodes
+    # psi on the planned nodes
     def _psi_job(self, X1, X2, A, s, e):
         """A[s:e] = |x|^2/2 - psi(x) on the head/segment nodes s..e-1."""
         with np.errstate(all="ignore"):
@@ -1234,7 +1234,7 @@ class Solver2D:
             total[sel] += self._tail_spectrum(bi, y, wp[sel])
         return wp / (2j * np.pi) * np.exp(0.5j * wp * (y @ y)) * total
 
-    # ------------------------------------------------------------------ optional interpolation in w
+    # optional interpolation in w
     def _stationary_grid(self, n=401):
         """
         The lens potential and its derivative  on a square grid covering the region where images can lie is computed(|x - c| <= x_b:
@@ -1425,7 +1425,7 @@ class Solver2D:
 PE_SETTINGS = dict(ngl=24, nlag=24, nufft_eps=1e-9, bw_factor=1.15, bw_margin=20, pou_density=12)
 
 
-# ================================================================== convenience functions
+
 def _err_kw(s, kw):
     kw2 = dict(kw); kw2["theta_factor"] = 2 * kw.get("theta_factor", 1.0)
     kw3 = dict(kw); kw3["xb_min"] = 1.5 * s.xb0
@@ -1590,7 +1590,7 @@ def amplification_table(ws, ys, lens, **kw):
         return s.evaluate(ws, ys)
 
 
-# ---- former names, kept so that existing scripts keep working
+# former names, kept so that existing scripts keep working
 def amplification_many(ws, y, lens, estimate_error=False, **kw):
     """Former name of amplification_spectrum (deprecated)."""
     warnings.warn("amplification_many is now amplification_spectrum", DeprecationWarning, stacklevel=2)
