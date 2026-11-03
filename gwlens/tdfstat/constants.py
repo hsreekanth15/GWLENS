@@ -1,3 +1,5 @@
+#These constants are used in the TDFstat code for ephemeris generation and Gaussian noise generation. 
+
 import numpy as np
 import math
 import lal

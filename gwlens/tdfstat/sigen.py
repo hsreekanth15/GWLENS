@@ -7,6 +7,59 @@ import numpy as np
 
 
 class TimeSeries:
+    """
+    A TimeSeries object represents a time-domain signal generated for a given detector and source parameters. It encapsulates the necessary computations to generate the signal based on the detector's properties and the source's characteristics.
+
+    Parameters
+    ----------
+    detector : object
+        An object representing the detector, which contains properties such as segment, band, overlap, start_time, delta_t, duration, starting_frequency, sampling_frequency, bandwidth, time_array, time_square_array, t_plus_t2_over_2, and time_domain_strain.
+    
+    Attributes
+    ----------
+    detector : object
+        An object representing the detector.
+    segment : float
+        The segment of the signal.
+    band : float
+        The band of the signal.
+    overlap : float
+        The overlap of the signal.
+    start_time : float
+        The start time of the signal.
+    delta_t : float
+        The time step of the signal.
+    duration : float
+        The duration of the signal.
+    starting_frequency : float
+        The starting frequency of the signal.
+    sampling_frequency : float
+        The sampling frequency of the signal.
+    bandwidth : float
+        The bandwidth of the signal.
+    time_array : numpy.ndarray
+        The time array of the signal.
+    time_square_array : numpy.ndarray
+        The square of the time array of the signal.
+    t_plus_t2_over_2 : numpy.ndarray
+        An array used in computations.
+    signal : numpy.ndarray
+        The generated signal.
+    phase : numpy.ndarray
+        The phase of the signal.
+    amplitude_mod_a : numpy.ndarray
+        The amplitude modulation for the a component.
+    amplitude_mod_b : numpy.ndarray
+        The amplitude modulation for the b component.
+    amplification : numpy.ndarray
+        The amplification factor for the signal.
+    
+    Methods
+    -------
+    generate_time_domain_signal(**params)
+        Generates the time-domain signal based on the provided source parameters.   
+
+    """
     def __init__(self, detector):
         self.detector = detector
 
@@ -34,6 +87,21 @@ class TimeSeries:
 
     @staticmethod
     def _generate_source_vector(ra, dec):
+        """
+        Generate the source vector based on right ascension and declination.    
+
+        Parameters
+        ----------
+        ra : float
+            Right ascension of the source in radians.
+        dec : float
+            Declination of the source in radians.   
+        
+        Returns
+        -------
+        numpy.ndarray
+            A 3-element array representing the source vector in Cartesian coordinates.
+        """
         cos_dec = np.cos(dec)
         return np.array([
             np.cos(ra) * cos_dec,
@@ -42,6 +110,23 @@ class TimeSeries:
         ])
 
     def _generate_amplitude_modulation(self, ra, dec):
+        """
+        Generate the amplitude modulation for the signal based on the source parameters.
+        From JKS paper: http://arxiv.org/abs/gr-qc/9804014
+        
+        Parameters
+        ----------
+        ra : float
+            Right ascension of the source in radians.
+        dec : float
+            Declination of the source in radians.
+
+        Returns
+        -------
+        tuple
+            A tuple containing the amplitude modulation factors for the a and b components.
+        """
+
         ra_mod = (
             ra
             - self.detector.ephemeris.phir
@@ -85,8 +170,29 @@ class TimeSeries:
 
     @staticmethod
     def _generate_four_amplitudes(
-        wobble_angle, inclination, polarization, reference_phase
-    ):
+        wobble_angle, inclination, polarization, reference_phase):
+
+        """
+        Generate the four amplitudes based on the source parameters.
+        From JKS paper: http://arxiv.org/abs/gr-qc/9804014  
+        
+        Parameters
+        ----------
+        wobble_angle : float
+            The wobble angle of the source in radians.
+        inclination : float
+            The inclination of the source in radians.
+        polarization : float
+            The polarization angle of the source in radians.
+        reference_phase : float
+            The reference phase of the source in radians.
+        Returns
+        -------
+        tuple
+            A tuple containing the four amplitudes (a21, a22, a23, a24) based on the source parameters.     
+        
+        """
+        
         sin_w2 = np.sin(wobble_angle) ** 2
         cos_i = np.cos(inclination)
         inc_term = 0.5 * (1.0 + cos_i ** 2)
@@ -104,6 +210,20 @@ class TimeSeries:
         return a21, a22, a23, a24
 
     def _generate_signal_phase(self, frequency, spin_down, ra, dec):
+        """
+        Generate the signal phase based on the source parameters.
+
+        Parameters
+        ----------      
+        frequency : float
+            The frequency of the signal.
+        spin_down : float
+            The spin-down rate of the signal.
+        ra : float
+            Right ascension of the source in radians.
+        dec : float
+            Declination of the source in radians.   
+        """
         nsource = self._generate_source_vector(ra, dec)
         r_dot_n = np.dot(self.detector.ephemeris.DetSSB, nsource)
 
@@ -116,6 +236,26 @@ class TimeSeries:
         return 2.0 * np.pi * (zero_order + first_order)
 
     def generate_time_domain_signal(self, **params):
+
+        """
+        This method generates the time-domain signal based on the provided parameters.  
+
+        Parameters
+        ----------
+        params : dict
+            A dictionary containing the parameters required for signal generation. Expected keys include:
+            - "frequency": The frequency of the signal.
+            - "spin_down": The spin-down rate of the signal.
+            - "ra": Right ascension of the source.
+            - "dec": Declination of the source.
+    
+        Returns
+        -------
+        signal : numpy.ndarray
+            The generated time-domain signal.
+        time_array : numpy.ndarray
+            The time array corresponding to the signal.
+        """ 
         phase = self._generate_signal_phase(
             params["frequency"],
             params["spin_down"],
