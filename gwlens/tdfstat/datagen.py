@@ -1,34 +1,12 @@
-#!/usr/bin/env python3
 """
+Mosrt of the code in this file is a Python port of the C code in TDFstat, particularly the ephemeris generation and Gaussian noise generation. 
 datagen.py - generate ephemeris data for multiple segments and detectors
 
 Python port of datagen.c + get_barycenter.c (Sreekanth Harikumar).
 Adapted from the original C code in TDFstat in particular the ephemeris generation and Gaussian noise generation.
 
-Tasks:
-  - reads a config .ini (section [tdfstat], plus [cwsignal] when write_signal = true
-    and [lensing] when lensing = true)
-  - for each segment / detector:
-      * picks the PSD file from psd-dict, interpolates it at the band frequency
-      * computes the detector ephemeris (DetSSB.bin, rDet.bin, rSSB.bin)
-      * writes Gaussian noise to xdat_<seg>_<band>.bin; if write_signal = true,
-        the CW signal (sigen.TimeSeries) is added to the noise before writing
-      * if lensing = true, the signal is multiplied by the amplification factor
-        |F| and its phase shifted by arg(F) before it goes into the noise
-  - advances the GPS time by one sidereal day * nod per segment
-
-Barycentring follows get_barycenter.c exactly: per time sample, XLALBarycenter is
-evaluated along the three sky directions x^=(0,0), y^=(pi/2,0), z^=(0,pi/2), and
-  DetSSB[3i+k] = emit.deltaT / dt     (detector wrt SSB, k-th component)
-  rDet[3i+k]   = emit.erot  / dt      (Earth-rotation/diurnal part)
-The detector geocentric XYZ and geographic position are the hardcoded values from
-get_barycenter.c / get_position.
-
-Only the sidereal phase `sid` cannot be matched bit-for-bit yet (sid.c not in hand):
-LAL's GreenwichMeanSiderealTime is used as a correct stand-in -- see sid() note.
-
-Requires:  numpy, scipy, lalsuite   (pip install numpy scipy lalsuite)
-Run:       gwlens_cw_datagen config.ini
+More details :https://github.com/Polgraw/TDFstat
+https://polgraw.github.io/TDFstat/input_data/
 """
 
 import argparse
@@ -46,24 +24,20 @@ import numpy as np
 from scipy.interpolate import CubicSpline, RectBivariateSpline
 from gwlens.tools.utilities import spline_eval_chunked
 from gwlens import microlensing
-
 import lal
 import lalpulsar
-
-try:                        # datagen imported as part of a package
+try:                       
     from .sigen import TimeSeries
-except ImportError:         # run directly: python datagen.py config.ini
+except ImportError:        
     from sigen import TimeSeries
 
-# ----------------------------------------------------------------------------
-# Constants (mirror the #defines in datagen.c / EphemerisDetector.h)
-# ----------------------------------------------------------------------------
+# Constants from the original C code in TDFSTAT
 EPSILON = constants.EPSILON
 SIDEREAL_DAY = constants.SIDEREAL_DAY
 C_SI = constants.C_SI
 _DEG = constants._DEG
 
-# Detector geocentric XYZ [metres] -- hardcoded exactly as in get_barycenter.c.
+# Detector geocentric XYZ [metres], hardcoded exactly as in get_barycenter.c.
 _H = (-2161414.92636,   -3834695.17889,    4600350.22664)
 _L = (-74276.04472380,  -5496283.71971000, 3224257.01744000)
 _V = (4546374.09900000,  842989.69762600,  4378576.96241000)
@@ -91,19 +65,39 @@ _SIGNAL_DEFAULTS = {
 }
 
 
-# ----------------------------------------------------------------------------
-# Detector helpers  (get_detector / get_position)
-# ----------------------------------------------------------------------------
 def get_detector(name):
-    """Match a detector name against the names[] table; return the canonical
-    name, or 'none' if unknown (mirrors get_detector returning enum 0)."""
+    """
+    Match a detector name against the names[] table; return the canonical
+    name, or 'none' if unknown (mirrors get_detector returning enum 0).
+
+    Parameters:
+    ------------
+    name : str
+        The detector name to match.
+
+    Returns:
+    --------
+    str
+        The canonical detector name, or 'none' if unknown.
+    """
     name = name.strip()
     return name if name in _NAMES and name != "none" else "none"
 
 
 def get_position(detector):
-    """Geographic position of a detector, exactly as in get_position():
+    """
+    Geographic position of a detector, exactly as in get_position():
         [0] latitude [rad], [1] longitude [rad], [2] height [m], [3] orientation [rad].
+    
+    Parameters:
+    -----------
+    detector : str
+        The detector name.
+
+    Returns:
+    --------
+    np.ndarray
+        The geographic position of the detector.    
     """
     deg = _DEG  # = 180/pi; dividing a degree-valued expression by deg gives radians
     if detector in ("L1", "LLO"):
@@ -129,12 +123,12 @@ def get_position(detector):
     return np.array([ephi, elam, eheight, egam])
 
 
-# ----------------------------------------------------------------------------
-# Time helpers  (gps2mjd / sid)
-# ----------------------------------------------------------------------------
 def gps2mjd(gps_time):
-    """GPS seconds -> MJD (GPS epoch = MJD 44244.0, no leap-second handling).
-    Kept for parity with the C call site; adjust if your sid.c differs."""
+    """
+    GPS seconds -> MJD (GPS epoch = MJD 44244.0, no leap-second handling).
+    Kept for parity with the C call site; adjust if your sid.c differs.
+
+    """
     return 44244.0 + gps_time / 86400.0
 
 
@@ -146,15 +140,29 @@ def sid(gps_time, elam):
     sidereal phase, but if your sid.c uses a different epoch/offset convention the
     two trailing scalars in DetSSB.bin (phir, EPSILON) will differ. Paste sid.c
     and this one function can be made bit-for-bit identical.
+
+    Parameters:
+    -----------
+    gps_time : float
+        The GPS time in seconds.
+    elam : float
+        The east longitude of the detector in radians.
+
+    Returns:
+    --------
+    float
+        The local mean sidereal phase in radians.   
     """
     gmst = lal.GreenwichMeanSiderealTime(lal.LIGOTimeGPS(gps_time))  # radians
     return float(np.mod(gmst + elam, 2.0 * np.pi))
 
 
-# ----------------------------------------------------------------------------
-# Directory creation  (mkdir_p)
-# ----------------------------------------------------------------------------
 def mkdir_p(path):
+    """
+    Docstring for mkdir_p
+    
+    :param path: Description
+    """
     try:
         os.makedirs(path, mode=0o755, exist_ok=True)
         return 0
@@ -165,11 +173,25 @@ def mkdir_p(path):
         return 0
 
 
-# ----------------------------------------------------------------------------
-# PSD interpolation  (interpolate_psd)
-# ----------------------------------------------------------------------------
+
 def interpolate_psd(filename, freq_query):
-    """Cubic-spline interpolate a 2-column (freq, psd) ASCII file at freq_query."""
+    """
+    Cubic-spline interpolate a 2-column (freq, psd) ASCII file at freq_query.
+    It reads the file and interpolates and helps in computes the noise sigma for a given frequency.
+    The Gaussian noise generator uses this to compute the noise sigma for a given frequency.
+
+    Parameters:
+    -----------
+    filename : str
+        The path to the PSD file.
+    freq_query : float
+        The frequency at which to interpolate.
+
+    Returns:
+    --------
+    float
+        The interpolated PSD value.
+    """
     try:
         data = np.loadtxt(filename)
     except OSError as e:
@@ -189,16 +211,38 @@ def interpolate_psd(filename, freq_query):
     return float(CubicSpline(freqs, psds)(freq_query))
 
 
-# ----------------------------------------------------------------------------
-# Gaussian data  (generate_gaussian_data)
-# ----------------------------------------------------------------------------
+
 def generate_gaussian_data(N, amp, sigma, dataout, maskfile=None, signal=None):
-    """Write N float32 samples amp*N(0, sigma) to the file path `dataout`.
+    """
+    The code is the pythoon version of the C code in TDFstat package gaussian_xdat.c
+    For more details see the corresponding c version (gaussian_xdat.c) in the TDFstat package.
+    https://github.com/Polgraw/TDFstat/blob/main/genseg/gauss-xdat-mask.c
+    Write N float32 samples amp*N(0, sigma) to the file path `dataout`.
 
     If `signal` is given (a length-N array in the same units as the noise),
     it is added to the noise before masking and writing, so the file holds
     noise + signal. Samples are zeroed where |mask| < 1e-30.
     Returns 0 on success, 1 on failure.
+
+    Parameters:
+    -----------
+    N : int
+        The number of samples to generate.
+    amp : float
+        The amplitude of the Gaussian noise.
+    sigma : float
+        The standard deviation of the Gaussian noise.
+    dataout : str
+        The path to the output file.
+    maskfile : str, optional
+        The path to the mask file.
+    signal : array-like, optional
+        The signal to add to the noise.
+
+    Returns:
+    --------
+    int
+        0 on success, 1 on failure.
     """
     if N <= 0:
         sys.stderr.write(f"Invalid N: {N}\n")
@@ -243,16 +287,35 @@ def generate_gaussian_data(N, amp, sigma, dataout, maskfile=None, signal=None):
     return 0
 
 
-# ----------------------------------------------------------------------------
-# Reference frequency  (get_fpo)
-# ----------------------------------------------------------------------------
+
 def get_fpo(bandnumber, bandwidth, ov):
-    """fpo = 10 + (1 - 2^-ov) * bandnumber * bandwidth."""
+
+    """
+    fpo = 10 + (1 - 2^-ov) * bandnumber * bandwidth.
+    A specific stcucture of the frequency bands, where bandnumber is an integer >= 0, bandwidth is the width of each band, and ov is the overlap factor.
+    More details: see the inpurt data structure for TDFstat packge : https://polgraw.github.io/TDFstat/input_data/
+
+    Parameters:
+    -----------
+    bandnumber : int
+        The band number.
+    bandwidth : float
+        The width of each band.
+    ov : float
+        The overlap factor.
+
+    Returns:
+    --------
+    float
+        The reference frequency for the given band.
+    """
     return 10.0 + (1.0 - 2.0 ** (-ov)) * bandnumber * bandwidth
 
 
 def suggest_bands(freq, bandwidth, ov):
-    """Find the band numbers whose range [fpo, fpo + bandwidth] contains freq.
+    """
+    Finding correct band is sometimes tricky, so this function helps to find the correct band for a given frequency.
+    Find the band numbers whose range [fpo, fpo + bandwidth] contains freq.
 
     Neighbouring bands overlap, so a frequency can lie in more than one.
     Returns (best, candidates), where best is the band in which freq sits
@@ -260,6 +323,20 @@ def suggest_bands(freq, bandwidth, ov):
     (bands start at 10 Hz).
 
     A better version than the one used prior to the GWLENS implementation.
+
+    Parameters:
+    -----------
+    freq : float
+        The frequency to search for.
+    bandwidth : float
+        The width of each band.
+    ov : float
+        The overlap factor.
+
+    Returns:
+    --------
+    tuple
+        A tuple (best, candidates) where best is the band in which freq sits closest to the centre, or (None, []) if no band contains freq.
     """
     step = (1.0 - 2.0 ** (-ov)) * bandwidth        # fpo spacing between bands
     if step <= 0.0 or freq < 10.0:
@@ -281,11 +358,23 @@ def suggest_bands(freq, bandwidth, ov):
     return best, candidates
 
 
-# ----------------------------------------------------------------------------
 # Barycentring  (get_barycenter)
-# ----------------------------------------------------------------------------
+
 def get_barycenter(gps1, site, edat, N, dt):
-    """For N samples from gps1 (step dt), evaluate XLALBarycenter along x^, y^, z^.
+    """
+    For N samples from gps1 (step dt), evaluate XLALBarycenter along x^, y^, z^.
+    Parameters
+    ----------
+    gps1 : float
+        The starting GPS time.
+    site : str
+        The detector site.
+    edat : lalpulsar.EarthState
+        The Earth state.
+    N : int
+        The number of samples.
+    dt : float
+        The time step.
 
     Returns
     -------
@@ -332,10 +421,36 @@ def get_barycenter(gps1, site, edat, N, dt):
 
 
 def generate_ephemeris_segment(gps_start, ndays, detector_name, output_dir, N, bandwidth, earth_ephem, sun_ephem):
-    """Build DetSSB/rDet/rSSB for one segment+detector and write the .bin files.
+    """
+    Build DetSSB/rDet/rSSB for one segment+detector and write the .bin files.
 
     Returns (DetSSB, phir) so the signal generator can reuse them, where DetSSB
     is the flat (3N,) array in units of dt. Returns None on failure.
+
+    Parameters:
+    -----------
+    gps_start : float
+        The starting GPS time.
+    ndays : int
+        The number of days to generate ephemeris for.
+    detector_name : str
+        The name of the detector.
+    output_dir : str
+        The directory to write the output files to.
+    N : int
+        The number of samples.
+    bandwidth : float
+        The width of each band.
+    earth_ephem : lalpulsar.EarthEphemeris
+        The Earth ephemeris.
+    sun_ephem : lalpulsar.SunEphemeris
+        The Sun ephemeris.
+
+    Returns:
+    --------
+    tuple
+        A tuple (DetSSB, phir) so the signal generator can reuse them, where DetSSB
+        is the flat (3N,) array in units of dt. Returns None on failure.
     """
     dt = 1.0 / (2.0 * bandwidth)
 
@@ -377,12 +492,13 @@ def generate_ephemeris_segment(gps_start, ndays, detector_name, output_dir, N, b
     return DetSSB, phir
 
 
-# ----------------------------------------------------------------------------
+
 # Signal generation (bridge to sigen.TimeSeries)
-# ----------------------------------------------------------------------------
+
 def build_detector(det_name, segment, band, ov, gps_start, N, bandwidth, fpo,
                    DetSSB, phir, strain=None):
-    """Wrap one segment's data in the detector object the original
+    """
+    Wrap one segment's data in the detector object the original
     sigen.TimeSeries expects.
 
     Units: time in seconds since gps_start; DetSSB converted back from units of
@@ -390,6 +506,36 @@ def build_detector(det_name, segment, band, ov, gps_start, N, bandwidth, fpo,
     With the usual bandwidth = 0.5 Hz, dt = 1 s, so seconds and samples coincide.
     TimeSeries adds its signal into `strain` in place; with the default (None)
     that is a zero array, so afterwards it holds the pure signal.
+
+    Parameters:
+    -----------
+    det_name : str
+        The name of the detector.
+    segment : int
+        The segment number.
+    band : float
+        The frequency band.
+    ov : float
+        The overlap.
+    gps_start : float
+        The starting GPS time.
+    N : int
+        The number of samples.
+    bandwidth : float
+        The width of each band.
+    fpo : float
+        The starting frequency.
+    DetSSB : numpy.ndarray
+        The detector barycenter array.
+    phir : float
+        The phase.
+    strain : numpy.ndarray, optional
+        The strain array.
+
+    Returns:
+    --------
+    SimpleNamespace
+        A namespace containing the detector information.    
     """
     if strain is None:
         strain = np.zeros(N, dtype=np.float64)
@@ -432,11 +578,22 @@ _EXPR_UNARYOPS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
 
 
 def parse_number(text):
-    """Parse a plain number or a simple arithmetic expression into a float.
+    """
+    Parse a plain number or a simple arithmetic expression into a float.
 
     Accepts numbers, the constants pi / e / tau (optionally written as np.pi,
     numpy.pi or math.pi), + - * / ** and parentheses, e.g. "np.pi/2",
     "-0.25*pi", "1e-24". Anything else raises ValueError.
+
+    Parameters:
+    -----------
+    text : str
+        The string to parse.
+
+    Returns:
+    --------
+    float
+        The parsed number.
     """
     def _eval(node):
         if isinstance(node, ast.Constant) and type(node.value) in (int, float):
@@ -459,7 +616,19 @@ def parse_number(text):
 
 
 def read_signal_params(config):
-    """Read the [cwsignal] section into a dict of floats, or None on error."""
+    """
+    Read the [cwsignal] section into a dict of floats, or None on error.
+    
+    Parameters:
+    -----------
+    config : configparser.ConfigParser
+        The configuration parser object.
+
+    Returns:
+    --------
+    dict or None
+        A dictionary of signal parameters, or None if an error occurs.
+    """
     if not config.has_section("cwsignal"):
         sys.stderr.write("write_signal = true but there is no [cwsignal] section.\n")
         return None
@@ -483,9 +652,9 @@ def read_signal_params(config):
     return params
 
 
-# ----------------------------------------------------------------------------
+
 # Lensing: amplification factor F = |F| exp(i arg F) along the microlensing track
-# ----------------------------------------------------------------------------
+
 LENS_MODEL_PARAMETERS = {
     "point": ["w_values", "y_values", "results"],
     "sis": ["w_values", "y_values", "results"],
@@ -511,6 +680,18 @@ _W_FACTOR = 8.0 * math.pi * lal.G_SI * lal.MSUN_SI / lal.C_SI ** 3
 def _load_hdf5_table(file_path, lens_model):
     """
     Load the HDF5 table for the given lens model and return the parameters as a dictionary.
+
+    Parameters:
+    -----------
+    file_path : str
+        The path to the HDF5 file.
+    lens_model : str
+        The lens model.
+
+    Returns:
+    --------
+    dict
+        A dictionary of the loaded parameters.
     """
     if lens_model not in LENS_MODEL_PARAMETERS:
         raise ValueError(f"Unsupported lens model: {lens_model}")
@@ -527,8 +708,16 @@ def _load_hdf5_table(file_path, lens_model):
 
 
 class _FixedWSpline:
-    """Wrap a 1-D spline so it takes the (w, y, grid=False) call that
-    spline_eval_chunked expects, for tables holding a single w value."""
+    """
+    Wrap a 1-D spline so it takes the (w, y, grid=False) call that
+    spline_eval_chunked expects, for tables holding a single w value.
+    
+    Parameters:
+    -----------
+    spline : callable
+        The 1-D spline to wrap. 
+    
+    """
 
     def __init__(self, spline):
         self._spline = spline
@@ -538,7 +727,8 @@ class _FixedWSpline:
 
 
 def build_amplification_splines(lens_data, lens_model, selection):
-    """Reduce `results` to a (w, y) grid and spline its real and imaginary parts.
+    """
+    Reduce `results` to a (w, y) grid and spline its real and imaginary parts.
 
     `results` is indexed [w, y, <model parameters>, 0/1], the last axis being
     real / imaginary. For every model parameter beyond w and y, the value in
@@ -546,6 +736,20 @@ def build_amplification_splines(lens_data, lens_model, selection):
 
     Returns (w_values, y_values, real_spline, imag_spline, chosen), where
     `chosen` maps each selection key to the table value actually used.
+
+    Parameters:
+    -----------
+    lens_data : dict
+        The lens data dictionary.
+    lens_model : str
+        The lens model.
+    selection : dict
+        The selection dictionary.
+
+    Returns:
+    --------
+    tuple
+        A tuple of (w_values, y_values, real_spline, imag_spline, chosen).  
     """
     w_values = np.asarray(lens_data["w_values"], dtype=np.float64)
     y_values = np.asarray(lens_data["y_values"], dtype=np.float64)
@@ -592,13 +796,38 @@ def build_amplification_splines(lens_data, lens_model, selection):
 
 
 class LensingModel:
-    """F(t) along one microlensing track, evaluated segment by segment.
+    """
+    F(t) along one microlensing track, evaluated segment by segment.
 
     Time is counted in days from the first sample of the run. The closest
     approach sits at t0, which defaults to the middle of the run. Each sample's
     time comes from its GPS time rather than from a sample count, so the track
     stays aligned with the data even though segments are a whole number of
     samples long while the GPS time advances by nod sidereal days.
+
+    Parameters:
+    -----------
+    real_spline : callable
+        The spline for the real part of the amplification factor.
+    imag_spline : callable
+        The spline for the imaginary part of the amplification factor.      
+
+    w : float
+        The dimensionless frequency parameter.
+    TE : float
+        The Einstein crossing time in days.
+    t_obs : float
+        The length of the run in days.
+    y0 : float
+        The minimum impact parameter.
+    delta_t : float
+        The sample spacing in seconds.
+    t0 : float, optional
+        The time of closest approach in days from the first sample of the run. Defaults to the middle of the run.
+    y_range : tuple, optional
+        The range of impact parameters (lo, hi) to clamp the spline evaluation. If None, no clamping is applied.
+    chunk_size : int, optional
+        The chunk size for spline evaluation. Defaults to 500,000.      
     """
 
     def __init__(self, real_spline, imag_spline, w, TE, t_obs, y0, delta_t,
@@ -636,11 +865,28 @@ class LensingModel:
 
 
 def prepare_lensing(config, cw_params, delta_t, run_seconds):
-    """Read [lensing], load the lookup table and return a LensingModel, or None.
+    """
+    Read [lensing], load the lookup table and return a LensingModel, or None.
 
     delta_t is the sample spacing [s] and run_seconds the length of the whole
     run, from the first sample of the first segment to the last sample of the
     last one. The track is centred on the time of closest approach.
+
+    Parameters:
+    -----------
+    config : configparser.ConfigParser
+        The configuration parser object.
+    cw_params : dict
+        The continuous wave parameters.
+    delta_t : float
+        The sample spacing in seconds.
+    run_seconds : float
+        The length of the whole run, from the first sample of the first segment to the last sample of the last one.     
+
+    Returns:
+    --------
+    LensingModel or None
+        A LensingModel object if successful, or None if an error occurs.    
     """
     if not config.has_section("lensing"):
         sys.stderr.write("lensing = true but there is no [lensing] section.\n")
@@ -788,7 +1034,8 @@ def prepare_lensing(config, cw_params, delta_t, run_seconds):
 
 def generate_signal(detector, cw_params, ref_gps_time, einstein_factor,
                     amplification=None):
-    """Generate the CW signal for one segment/detector with the original
+    """
+    Generate the CW signal for one segment/detector with the original
     sigen.TimeSeries and return it (float32) in the same units as the noise.
 
     [cwsignal] gives the absolute GW frequency [Hz] and spin-down [Hz/s]. They
@@ -801,6 +1048,24 @@ def generate_signal(detector, cw_params, ref_gps_time, einstein_factor,
     If `amplification` is given (complex F, one value per sample), it is
     passed on to sigen, which multiplies the signal by |F| and shifts its
     phase by arg(F).
+
+    Parameters:
+    -----------
+    detector : SimpleNamespace
+        The detector object for this segment.       
+    cw_params : dict
+        The CW signal parameters from [cwsignal].
+    ref_gps_time : float
+        The reference GPS time (the first segment's start time).    
+    einstein_factor : float
+        The Einstein factor to convert the signal amplitude to the same units as the noise.
+    amplification : numpy.ndarray, optional
+        The complex amplification factor F for microlensing, one value per sample.  
+    
+    Returns:
+    --------
+    numpy.ndarray
+        The generated signal for this segment/detector, in float32 and the same units as the noise. 
     """
     # GW frequency at this segment's start: spin-down evolves it from the
     # reference time (the first segment), so all segments stay consistent.
@@ -870,12 +1135,18 @@ def generate_signal(detector, cw_params, ref_gps_time, einstein_factor,
     return signal.astype(np.float32)
 
 
-# ----------------------------------------------------------------------------
-# psd-dict parsing  (get_psd_for_detector)
-# ----------------------------------------------------------------------------
+
 def get_psd_for_detector(psd_dict, detector):
-    """Pull the PSD path for `detector` from a "{H1:/path, L1:/path}" string in the ini file
-    same ini file will be used 
+    """
+    Pull the PSD path for `detector` from a "{H1:/path, L1:/path}" string in the ini file
+    same ini file will be used for the psd_dict and detector name
+
+    Parameters:
+    -----------
+    psd_dict : str
+        The string containing the PSD paths for each detector.
+    detector : str
+        The name of the detector to retrieve the PSD path for.      
     """
     if not psd_dict or not detector:
         return None
@@ -889,9 +1160,7 @@ def get_psd_for_detector(psd_dict, detector):
     return None
 
 
-# ----------------------------------------------------------------------------
-# main
-# ----------------------------------------------------------------------------
+
 def main(argv=None):
 
     parser = argparse.ArgumentParser(description="Generate segments for TDFStat")
