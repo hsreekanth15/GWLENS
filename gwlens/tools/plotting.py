@@ -205,15 +205,7 @@ def format_axis(
     return ax
 
 
-def add_legend(
-    ax,
-    loc="best",
-    ncol=1,
-    title=None,
-    frameon=False,
-    fontsize=None,
-    **kwargs,
-):
+def add_legend(ax,  loc="best",ncol=1,title=None,frameon=False,fontsize=None,**kwargs,):
     """
     Consistent legend formatting.
     """

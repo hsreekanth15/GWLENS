@@ -656,7 +656,6 @@ def _warn_once(key, msg):
         warnings.warn(msg)
 
 
-# ================================================================== parallel helpers
 # Processes are started with 'fork', so workers inherit the lens (which may hold lambdas) and the
 # finished solver without any pickling. A forked process must not start OpenMP threads if its parent
 # already did (GNU libgomp then deadlocks), so FINUFFT runs with one thread in every forked process,
@@ -720,7 +719,7 @@ def _shutdown_pool(ex, pid):
         ex.shutdown(wait=True, cancel_futures=True)
 
 
-# ================================================================== solver
+
 class _LazyBands:
     """The frequency bands of a solver, each built on first use: a sparse set of frequencies builds only
     the bands it touches. Indexing and iteration work as for a list."""
@@ -744,53 +743,6 @@ class _LazyBands:
 class Solver1D:
     """
     Everything that does not depend on (w, y), for all wmin <= w <= wmax and all source positions
-    
-
-    Evaluation (all reuse the same nodes; psi is never evaluated again for the head):
-      s(w, y=None)            F at one frequency, one source position (default: y0)
-      s.spectrum(ws, y=None)  many frequencies, one source position   -> batched 1D non-uniform FFT
-      s.profile(w, ys)        one frequency, many source positions    -> direct sums
-      s.evaluate(ws, ys)      table (len(ys), len(ws))
-
-    Accuracy/tuning  parameters (defaults give ~1e-12):
-    cycles, ngl (phase cycles / maximum Gauss-Legendre nodes per head piece), nlag (Laguerre nodes on the tail), n_cheb (Chebyshev frequencies per band),
-    band_ratio (width of the frequency bands), xb_min (move the split outward = convergence test),
-    nufft_eps (FINUFFT tolerance), z_small (w y x below which J0 is used by its Taylor series),
-    adaptive_gl (True: pieces with little phase get fewer nodes, sized by an error bound calibrated
-    on the full pieces with ngl nodes; False: ngl nodes on every piece, as before).
-    PE_SETTINGS: lighter settings for parameter estimation (accuracy ~1e-8).
-
-    How a band is summed (speed): the head nodes near u = 0, where the phase w A_j changes by less than
-    a few radians across the band and w y x_j is small, are summed once into a polynomial in w
-    (Taylor series of exp(i (w - w_mid) A_j) and of J0; computed on the first call that needs the
-    band); only the remaining nodes are summed per frequency (directly, or by NUFFT for many
-    frequencies). Bands are built when first needed, so a few frequencies build only their bands.
-
-    Interpolation (for many frequencies)
-      interpolate  True (default): F is computed on Chebyshev panels sized by the lens time delays
-                   (number of points per panel from an error bound) and interpolated to the requested
-                   frequencies; used when it needs fewer exact evaluations than requested frequencies.
-                   False: every frequency is computed. 'auto': interpolate only for >= ~4000 frequencies.
-                   Can also be passed per call: s.spectrum(ws, y, interpolate=True).
-      interp_tol   the interpolant is checked against exact values at four frequencies per panel;
-                   a panel whose relative error exceeds interp_tol/3 is split (max 3 times); if
-                   interp_tol is still not reached, the exact path is used. None (default):
-                   max(1e-10, 100 nufft_eps), i.e. above the accuracy of the exact values (1e-7 with
-                   PE_SETTINGS).
-
-    Time origin (the phase of F)
-      time_origin  None (default): T = |x - y|^2/2 - psi(x) as it stands, no time shift.
-                   'first_image': time measured from the arrival of the first image, i.e. F is multiplied
-                   by exp(-i w T_min(y)), T_min = first_image_delay(y) (the phi_m(y) of Takahashi &
-                   Nakamura 2003 for the point mass). A number t0: F is multiplied by exp(-i w t0).
-                   Only the phase changes, by a term linear in w (a constant time shift).
-
-    Parallelism
-      n_workers   maximum number of processes for evaluate() (1: none; None: all cores); used only
-                  when timing of the first rows predicts a clear gain. close() stops the pool.
-      threads     FINUFFT threads per call (None = 1: the transforms are small and one thread is
-                  fastest; always 1 in forked or daemonic processes, e.g. bilby's npool workers).
-
     Parameters
     ----------
     lens : Potential or callable
@@ -938,7 +890,7 @@ class Solver1D:
         self.interp_tol = max(1e-10, 100 * self.nufft_eps) if interp_tol is None else float(interp_tol)
         self.adaptive_gl = bool(adaptive_gl)
         self._tdcache = {}
-        self._tdgrid = None
+        self.tdgrid = None
         self._pcache = {}
         self._pool = self._pool_fin = self._pool_pid = None
 
@@ -952,12 +904,13 @@ class Solver1D:
         self._eps_t = float(np.clip(1e-3 * self.nufft_eps, 1e-17, 1e-11))
         self._zc = (11.0, 11.0) if self._eps_t >= 1e-12 else (_ZC_SER, _ZC_ASY)   # complex Bessel ranges
 
-        # ---- split: (y_hi + psi'(x_b))/x_b <= thr, thr = 1/2 (or (1 + kappa)/2 with a mass sheet)
+        #split: (y_hi + psi'(x_b))/x_b <= thr, thr = 1/2 (or (1 + kappa)/2 with a mass sheet), for Type II and III the
+        #this implementation doesn't work.
         q = lens.q_inf
         if q is None:
             q = max(float(lens.dpsi(R) / R) for R in (1e3, 1e4))
         if q >= 1:
-            raise ValueError(f"lim psi'/x = {q:.3f} >= 1: the tail cannot be rotated upward.")
+            raise ValueError(f"lim psi'/x = {q:.3f} >= 1: the tail cannot be rotated upward. For the Type II and III case Work in Progress, email sreekanth@camk.edu.pl for an early access...")
 
         #Threshold for splitting the integration into head and tail
         thr = max(0.5, 0.5 * (1 + q))
@@ -979,7 +932,7 @@ class Solver1D:
 
         self.u_floor = 1e-15 / max(self.wmax, 1.0)            # [0, u_floor] contributes < 1e-15
 
-        # ---- phase per unit w, V1(u) (worst case over the y range), places the head pieces
+        #phase per unit w, V1(u) (worst case over the y range), places the head pieces
         # Its a Phase meter here
         # linear grid on [0, u_b0] (resolves the oscillation), geometric grid out to ub_max (beyond u_b0
         # A(u) is monotonic, so ~60 points per e-fold suffice there and near u = 0)
@@ -1340,7 +1293,7 @@ class Solver1D:
             idx[sel] = i
         return idx
 
-    # ------------------------------------------------------------------ sums
+
     def _nufft(self, src, C, wb):
 
         """
@@ -1587,12 +1540,20 @@ class Solver1D:
         It is phi_m(y) of Takahashi & Nakamura (2003) for the point mass. Start at the lowest point of a
         grid in |s| on both sides of the lens, then safeguarded Newton iteration on T'(s) = 0 to rounding
         (psi' by the complex step, psi'' by central differences of psi').
+
+        Not doing this correct will create a mismatch in phase plot of the lensing amplification and likely also
+        shift the geocentric time.
+
+        Parameters
+        ----------
+
         """
         y = np.abs(np.asarray(y, dtype=float))
-        shape, yf = y.shape, y.ravel()
+        shape = y.shape
+        yf  = y.ravel()
         if yf.size == 1 and float(yf[0]) in self._tmincache:
             return self._tmincache[float(yf[0])] if shape == () else np.full(shape, self._tmincache[float(yf[0])])
-        x, ps = self._td_grid()[:2]
+        x, ps = self.timedelay_grid()[:2]
         out = np.empty(yf.size)
         step = max(1, 4_000_000 // x.size)
         for a in range(0, yf.size, step):
@@ -1676,34 +1637,57 @@ class Solver1D:
             total[sel] = v
         return -1j * wp * np.exp(0.5j * wp * y * y) * total
 
-    def _td_grid(self):
-        """y-independent grid on the lens axis (|s|, psi, lens-equation function g, caustics, core),
-        computed once per solver."""
-        if self._tdgrid is None:
+    def timedelay_grid(self):
+        """
+        y-independent grid on the lens axis (|s|, psi, lens-equation function g, caustics, core),
+        computed once per solver. It calculates a grid of the time-delay surface with additional information
+        about extrema values 
+        
+        !!!!!!!!
+        Caution:
+        !!!!!!!!
+
+        The slope change of zero in dg (derivative of the lens equation) if goes to zero are not flagged.
+        Such cases are yet to be investigated properly. 
+        This might not be a big for axially symmetric lens models but might flag ( note "might"). Have to be 
+        checked for more complicated lens.
+
+        """
+        if self.tdgrid is None:
             lens = self.lens
+            #Choosing a maximum point to compute the grid beyond the split point  xb0
             xmax = 1.5 * max(self.xb0, 2 * self.y_hi + 2)
-            x = np.unique(np.concatenate([np.geomspace(1e-6, 1.0, 600), np.linspace(1.0, xmax, 1200)]))
+            #using geomspace for more finer sampling close to the lens centre where singualr points lie
+            below1 = np.geomspace(1e-6, 1.0, 600)
+            above1 = np.linspace(1.0, xmax, 1200)
+            x = np.unique(np.concatenate([below1, above1]))
+            #Below g is the lens equation
+            # dg is roughly the slope of g between consecutive time-delay points
             with np.errstate(all="ignore"):
                 ps = lens.real(x)
-                g = x - np.gradient(ps, x)                   # lens equation: g(|s|) = +-y
+                g = x - np.gradient(ps, x)                
                 p0 = lens.real(np.array([1e-12, 1e-9]))
-            dg = np.diff(g)                                  # merging points (caustics): extrema of g
-            ext = np.nonzero(np.isfinite(dg[:-1]) & np.isfinite(dg[1:]) & (np.sign(dg[:-1]) != np.sign(dg[1:])))[0] + 1
+            # A rought slope
+            dg = np.diff(g) 
+            # The sign change in neightbouring points of the slope are checked to identify the extrema points.                                
+            extrema = np.nonzero(np.isfinite(dg[:-1]) & np.isfinite(dg[1:]) & (np.sign(dg[:-1]) != np.sign(dg[1:])))[0] + 1
             core = p0[0] if (np.all(np.isfinite(p0)) and abs(p0[0] - p0[1]) < 1e-6 * (1 + abs(p0[0]))) else None
-            self._tdgrid = (x, ps, g, ext, core)
-        return self._tdgrid
+            self.tdgrid = (x, ps, g, extrema, core)
+        return self.tdgrid
 
    #optional interpolation in w
-    def _time_delay_range(self, y):
-        """(T_min, T_max) of the Fermat potential T(s) = (s - y)^2/2 - psi(|s|) on the lens axis at the
+    def timedelay_range(self, y):
+        """
+        (T_min, T_max) of the Fermat potential T(s) = (s - y)^2/2 - psi(|s|) on the lens axis at the
         real images, at the points where images merge (caustics) and at s = 0 if psi(0) is finite.
-        F(w) oscillates in w only through exp(i w T) at these times (plus smooth terms)."""
+        F(w) oscillates in w only through exp(i w T) at these times (plus smooth terms).
+        """
         if y in self._tdcache:
             return self._tdcache[y]
-        x, ps, g, ext, core = self._td_grid()
+        x, ps, g, ext, core = self.timedelay_grid()
         Ts = []
         with np.errstate(all="ignore"):
-            for sgn in (1.0, -1.0):                          # image side (s > 0) and opposite side
+            for sgn in (1.0, -1.0):                         
                 T = 0.5 * (x - sgn * y) ** 2 - ps
                 d = g - sgn * y
                 ok = np.isfinite(d) & np.isfinite(T)
@@ -1771,7 +1755,7 @@ class Solver1D:
 
         Tested and keepig it here,becoz its faster than splines from scipy. And also accurate
         """
-        T_lo, T_hi = self._time_delay_range(y)
+        T_lo, T_hi = self.timedelay_range(y)
         Tc = 0.5 * (T_lo + T_hi)
         B = 0.5 * (T_hi - T_lo) * 1.05 + 0.25               # half bandwidth of F e^{-i w Tc}, with margin
         w_lo, w_hi = wp.min(), wp.max()
@@ -1947,7 +1931,6 @@ class Solver1D:
 PE_SETTINGS = dict(ngl=24, nlag=24, n_cheb=13, nufft_eps=1e-9)
 
 
-# ================================================================== convenience functions
 def _err_kw(s, kw):
     return dict(kw, ngl=kw.get("ngl", 32) + 8, nlag=kw.get("nlag", 30) + 10, xb_min=1.5 * s.xb0)
 

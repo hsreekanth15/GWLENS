@@ -571,7 +571,8 @@ class Solver2D:
         if not lens._checked:
             lens.check_analytic()
         self.interpolate, self.interp_tol = _interp_mode(interpolate, False), float(interp_tol)
-        self._tdgrid, self._tdcache = None, {}
+        self._tdgrid = None
+        self._tdcache = {}
         self.time_origin = _time_origin_mode(time_origin)
         self._tmincache, self._tmingrid = {}, None
         self.n_workers = available_cores() if (n_workers is None or n_workers <= 0) else int(n_workers)
@@ -1249,7 +1250,7 @@ class Solver2D:
             self._tdgrid = (X1, X2, ps, g1, g2)
         return self._tdgrid
 
-    def _time_delay_range(self, y):
+    def timedelay_range(self, y):
         """
         This is a 2D verison of the smae time delay that you can find in the solver1d.py script.
         (T_min, T_max) of the time delay T(x) = |x - y|^2/2 - psi(x) over its stationary points
@@ -1289,7 +1290,7 @@ class Solver2D:
     def _spectrum_interp(self, wp, y, auto=False, n_p=24):
         """F at wp by Chebyshev interpolation on panels (nodes and check frequencies in one transform),
         or None if not worth it / not accurate enough after 3 refinements."""
-        T_lo, T_hi = self._time_delay_range(y)
+        T_lo, T_hi = self.timedelay_range(y)
         Tc = 0.5 * (T_lo + T_hi)
         B = 0.5 * (T_hi - T_lo) * 1.2 + 0.5                 # half bandwidth of F e^{-i w Tc}, with margin
         w_lo, w_hi = wp.min(), wp.max()
