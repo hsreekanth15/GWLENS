@@ -1,3 +1,11 @@
+######################################
+
+#The code below is under some restructing process.
+# So use with caution.
+# Some function may be me moved to separate file.... 
+############################################
+
+
 import os
 import signal
 import weakref
@@ -894,7 +902,6 @@ class Solver2D:
             filled.append((X1[m], X2[m], A[m], W[m]))
         return filled, nthr
 
-    # ------------------------------------------------------------------ frequency band: segment + tail plan
     def _plan_band(self, w_lo, w_hi, ub, n_cheb):
         lens, c = self.lens, self.c
         xb = np.sqrt(2 * ub)
@@ -961,7 +968,7 @@ class Solver2D:
         if np.any(wp < self.wmin * (1 - 1e-12)) or np.any(wp > self.wmax * (1 + 1e-12)):
             raise ValueError(f"frequencies must lie in [{self.wmin:g}, {self.wmax:g}] for this solver")
 
-    # ------------------------------------------------------------------ threads and processes
+    
     def _nthreads(self, n_points=None):
         """Threads for one FINUFFT / numexpr call on n_points points (None: the most this solver may use).
         One thread per _PTS_PER_THREAD points, at most `threads` (all cores for 'auto'); always 1 in
@@ -1007,7 +1014,7 @@ class Solver2D:
         d["_pool"] = d["_pool_fin"] = d["_pool_pid"] = None
         return d
 
-    # ------------------------------------------------------------------ sums over nodes
+
     def _sum_w(self, phi, W, ws):
         """sum_j W_j exp(i w phi_j) for an array of w."""
         if phi.size == 0:
@@ -1042,7 +1049,6 @@ class Solver2D:
             return ne.evaluate("A - x1 * a - x2 * b", local_dict=dict(A=A, x1=x1, x2=x2, a=float(y[0]), b=float(y[1])))
         return A - x1 * y[0] - x2 * y[1]
 
-    # ------------------------------------------------------------------ tail for one y: table in 1/w
     def _tail_table(self, bi, y):
         key = (float(y[0]), float(y[1]))
         hit = self._tcache.get(bi)
@@ -1089,7 +1095,7 @@ class Solver2D:
             R = D @ np.exp(1j * np.outer(P, wb))
         return np.sum(R * T, axis=0) / wb
 
-    # ------------------------------------------------------------------ public evaluation
+    
     def spectrum(self, ws, y=None, interpolate=None):
         """F at an array of frequencies for one source position y (default: the centre).
         interpolate: None = the solver's setting; True / False / 'auto' (see the class docstring)."""

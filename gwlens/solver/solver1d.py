@@ -1,3 +1,10 @@
+######################################
+
+#The file is under some restructing process.
+# So use with caution.
+# Some function may be me moved to separate file.... 
+############################################
+
 
 import os
 import math
@@ -352,11 +359,9 @@ def _bary_matrix(xc, xe):
     return M
 
 
-# Hankel expansion taken from here (https://dlmf.nist.gov/10.17). See 10.17.5 for more details.
-# It coverges very fast so only few terms are needed.
-# relative error < 1e-15 for z >= 25. Below that: J0 + i Y0 from scipy.
-#The below factors are used in the functions _h_asym() and it is hardcoded because the scipy's default function call is 130ns per value
-# _h_asym() function is called a million times so it is needed to speed things up....
+
+
+
 
 _J0_TAYLOR = np.array([(-1.0) ** k / (4.0 ** k * math.factorial(k) ** 2) for k in range(24)])
 _Z_ASYM = 25.0
@@ -368,10 +373,16 @@ _HQ = np.array([(-1) ** ((k - 1) // 2) * _HA[k] for k in range(1, 20, 2)])    # 
 _HC = np.sqrt(2 / np.pi) * np.exp(-0.25j * np.pi)
 
 
-def _h_asym(z):
+def Hankel_asymptotic_Expansion(z):
     """
     h(z) = H0^(1)(z) exp(-iz) for real z >= _Z_ASYM: asymptotic expansion, smooth, ~ sqrt(2/(pi z)) e^{-i pi/4}.
     A faster version...
+    Hankel expansion taken from here (https://dlmf.nist.gov/10.17). See 10.17.5 for more details.
+    It coverges very fast so only few terms are needed.
+    The below factors are used in the functions Hankel_asymptotic_Expansion() and it is hardcoded because the scipy's default function call is 130ns per value
+    
+    This function is called a million times so it is needed to speed things up....
+    
     Parameters:
     -----------
     z : float or ndarray
@@ -415,10 +426,10 @@ def _h_env(z):
     z = np.asarray(z, dtype=float)
     far = z >= _Z_ASYM
     if far.all():
-        return _h_asym(z)
+        return Hankel_asymptotic_Expansion(z)
     out = np.empty(z.shape, dtype=complex)
     if far.any():
-        out[far] = _h_asym(z[far])
+        out[far] = Hankel_asymptotic_Expansion(z[far])
     zn = z[~far]
     #Exact definition is used here and it is called from scipy
     out[~far] = (j0(zn) + 1j * y0(zn)) * np.exp(-1j * zn)
@@ -1323,8 +1334,12 @@ class Solver1D:
         return out
 
     def _h_cached(self, bi, y, big):
-        """W_j h(wc y x_j) for the band's non-small per-frequency nodes at its Chebyshev frequencies wc
-        (cached per band for the last source position)."""
+        """
+        W_j h(wc y x_j) for the band's non-small per-frequency nodes at its Chebyshev frequencies wc
+        (cached per band for the last source position).
+        
+        
+        """
         hit = self._hcache.get(bi)
         if hit is not None and hit[0] == y:
             return hit[1]
@@ -1334,8 +1349,11 @@ class Solver1D:
         return H
 
     def _head_fast(self, bi, y, wb):
-        """sum_j W_j J0(w y x_j) exp(i w A_j) over the band's per-frequency nodes, many w
-        (Taylor + Hankel/Chebyshev + NUFFT)."""
+        """
+        sum_j W_j J0(w y x_j) exp(i w A_j) over the band's per-frequency nodes, many w
+        (Taylor + Hankel/Chebyshev + NUFFT).
+        
+        """
         b = self.bands[bi]
         x, W, A, hi = b["x"], b["W"], b["A"], b["hi"]
         out = np.zeros(wb.size, dtype=complex)
@@ -1530,7 +1548,12 @@ class Solver1D:
         return F
 
     def _t0(self, y):
-        """Time origin for source position(s) y (see time_origin)."""
+        """
+        Time origin for source position(s) y (see time_origin).
+        This plays the role of $\phi_m(y)$ in the Fermat Potential to arrange the arrival time to the first image.
+        But default we STRONGLY recommend to choosen "firs_image" as the time_origin. Otherwise your computed
+        F and phase will differ from other codes...
+        """
         return self.first_image_delay(y) if self.time_origin == "first_image" else self.time_origin
 
     def first_image_delay(self, y):
@@ -1661,7 +1684,8 @@ class Solver1D:
             below1 = np.geomspace(1e-6, 1.0, 600)
             above1 = np.linspace(1.0, xmax, 1200)
             x = np.unique(np.concatenate([below1, above1]))
-            #Below g is the lens equation
+            #Below ps is the potential
+            # g is the lens equation
             # dg is roughly the slope of g between consecutive time-delay points
             with np.errstate(all="ignore"):
                 ps = lens.real(x)
