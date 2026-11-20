@@ -11,7 +11,4 @@
 
 📖 Documentation: https://hsreekanth15.github.io/GWLENS/
 
-<br clear="left"/>
 
-## Installation
-...
