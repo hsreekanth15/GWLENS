@@ -1,5 +1,6 @@
 [![PyPI version](https://badge.fury.io/py/GWLENS.svg)](https://pypi.org/project/gwlens/)
-[![Python versions](https://img.shields.io/pypi/pyversions/GWLENS.svg)](https://pypi.org/project/GWLENS)
+[![GitHub release](https://img.shields.io/github/v/release/OWNER/REPO)](https://github.com/OWNER/REPO/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/OWNER/REPO/blob/main/LICENSE)
 [![Downloads](https://img.shields.io/pypi/dm/GWLENS)](https://pypi.org/project/GWLENS/)
 
 # GWLENS-  Gravitational Wave Lensing Exploration of Non-visible Structures
