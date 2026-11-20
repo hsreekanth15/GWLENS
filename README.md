@@ -1,8 +1,7 @@
 <img src="https://raw.githubusercontent.com/hsreekanth15/GWLENS/main/docs/assets/logo.png" alt="GWLENS logo" width="160" align="left">
 
-# GWLENS
 
-**Gravitational Wave Lensing Exploration of Non-visible Structures**
+**GWLENS: Gravitational Wave Lensing Exploration of Non-visible Structures**
 
 [![PyPI version](https://badge.fury.io/py/GWLENS.svg)](https://pypi.org/project/gwlens/)
 [![GitHub release](https://img.shields.io/github/v/release/hsreekanth15/GWLENS)](https://github.com/hsreekanth15/GWLENS/releases/latest)
