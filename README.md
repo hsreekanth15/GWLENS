@@ -26,7 +26,7 @@ If you use GWLENS in your research, please cite:
 ```bibtex
 @misc{gwlens,
   title         = {A twist in the tail: {GWLENS}, a fast and accurate tool for wave-optics lensing of gravitational waves},
-  author        = {Harikumar, Sreekanth and Kanu, Ansal and Nemmani, Anirudh and Ciecieli{\k{a}}g, Pawe{\l} and Bejger, Micha{\l}},
+  author        = {Harikumar, Sreekanth and Kanu, Ansal and Nemmani, Anirudh and Cieciel{\k{a}}g, Pawe{\l} and Bejger, Micha{\l}},
   year          = {2026},
   eprint        = {2611.24621},
   archivePrefix = {arXiv},
