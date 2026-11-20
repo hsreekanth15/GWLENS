@@ -11,3 +11,26 @@
 📖 Documentation: https://hsreekanth15.github.io/GWLENS/
 
 
+## Publication
+
+GWLENS is described in:
+
+> **A twist in the tail: GWLENS, a fast and accurate tool for wave-optics lensing of gravitational waves**  
+> Sreekanth Harikumar, Ansal Kanu, Anirudh Nemmani, Paweł Ciecieląg, Michał Bejger  
+> arXiv:2611.24621 [gr-qc] (2026) · [arXiv](https://arxiv.org/abs/2611.24621) · [PDF](https://arxiv.org/pdf/2611.24621)
+
+## Citation
+
+If you use GWLENS in your research, please cite:
+
+```bibtex
+@misc{harikumar2026twisttailgwlensfast,
+  title         = {A twist in the tail: {GWLENS}, a fast and accurate tool for wave-optics lensing of gravitational waves},
+  author        = {Harikumar, Sreekanth and Kanu, Ansal and Nemmani, Anirudh and Ciecieli{\k{a}}g, Pawe{\l} and Bejger, Micha{\l}},
+  year          = {2026},
+  eprint        = {2611.24621},
+  archivePrefix = {arXiv},
+  primaryClass  = {gr-qc},
+  url           = {https://arxiv.org/abs/2611.24621}
+}
+```
