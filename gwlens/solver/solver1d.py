@@ -75,11 +75,11 @@ class Potential:
         """
         Add two potentials (or a potential and a constant).
         Parameters
-        ----------  
+        ----------
         other : Potential or float
             The potential or constant to add.
-        Returns:
-        --------
+        Returns
+        -------
         Potential
             A new Potential instance representing the sum of the two potentials.    
         """
@@ -94,16 +94,16 @@ class Potential:
         """
         psi'(x) for real x > 0 by the complex step (exact to rounding).
         This is better understood by Taylor expansion in the complex plane.
-        Parameters:
-        -----------
+        Parameters
+        ----------
         x : float or array-like
             The point(s) at which to evaluate the derivative of psi.    
         h : float, optional
             The step size for the complex step (default is 1e-20).
-        Returns:
-        --------
+        Returns
+        -------
         float or ndarray
-        The derivative of psi at the specified point(s).    
+            The derivative of psi at the specified point(s).
 
         """
         x = np.asarray(x, dtype=float)
@@ -113,12 +113,12 @@ class Potential:
         """
         Compare complex-step and finite-difference derivatives; warn if psi is not analytic.
         The rotated tail part of the code requires the function to be analytic. 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         verbose : bool, optional
             If True, print detailed information about the derivative mismatch and other checks (default is False).
-        Returns:
-        --------
+        Returns
+        -------
         float
             The maximum relative mismatch between the complex-step and finite-difference derivatives.   
         """
@@ -152,13 +152,13 @@ def point_mass(m=1.0):
     """
     Point mass lens potential psi = m ln(x).
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     m : float, optional
         The mass of the point mass (default is 1.0).
 
-    Returns:
-    --------
+    Returns
+    -------
     Potential
         A Potential object representing the point mass lens potential.
     """
@@ -170,13 +170,13 @@ def sis(psi0=1.0):
     """
     SIS (singular isothermal sphere) lens potential psi = psi0 x.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     psi0 : float, optional
         The characteristic surface density (default is 1.0).
 
-    Returns:
-    --------
+    Returns
+    -------
     Potential
         A Potential object representing the SIS lens potential.
     """
@@ -187,8 +187,8 @@ def sis(psi0=1.0):
 def cis(psi0=1.0, rc=0.05):
     """
     Cored isothermal sphere (GLoW convention): psi0 [r + rc ln(2 rc/(r + rc))], r = sqrt(x^2 + rc^2).
-    Parameters:
-    ----------- 
+    Parameters
+    ----------
     psi0 : float, optional
         The Amplitude (default is 1.0).
     rc : float, optional
@@ -206,14 +206,14 @@ def nfw(k=1.0, psi0=1.0):
     """
     NFW: 0.5 psi0 [ln^2(v/2) + arccos^2(1/v)], v = k x  (k = xi0 / r_s).
     The convention is similar to GLoW refer Villarubia et. al.(put the proper reference here). 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     k : float, optional
         The scale factor (default is 1.0).
     psi0 : float, optional
         The characteristic surface density (default is 1.0).
-    Returns:        
-    --------
+    Returns
+    -------
     Potential
         A Potential object representing the NFW lens potential.
     """
@@ -241,12 +241,12 @@ def mass_sheet(kappa):
     The solver fails for kappa > 1 with a warning. 
     The q_inf parameter exists in the potential to deal with such lenses.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     kappa : float
         The convergence parameter (must be less than 1).    
-    Returns:
-    --------
+    Returns
+    -------
     Potential
         A Potential object representing the mass sheet lens potential.
 
@@ -258,14 +258,14 @@ def mass_sheet(kappa):
 def power_law(psi0=1.0, p=1.0):
     """
     psi = psi0 x^p / p  (0 < p < 2): deflection psi0 x^(p-1); p = 1 is the SIS.
-    Parameters:
-    -----------
+    Parameters
+    ----------
     psi0 : float, optional
         The amplitude (default is 1.0).
     p : float, optional
         The power-law index (default is 1.0, must be between 0 and 2).
-    Returns:
-    --------
+    Returns
+    -------
     Potential
         A Potential object representing the power-law lens potential.
     """
@@ -283,12 +283,12 @@ _GL, _LAG = {}, {}
 def _gl(n):
     """
     Get Gauss-Legendre nodes and weights for n points.
-    Parameters:
-    -----------
+    Parameters
+    ----------
     n : int
         The number of points.
-    Returns:
-    --------
+    Returns
+    -------
     tuple
         A tuple containing the nodes and weights.
     """
@@ -300,12 +300,12 @@ def _gl(n):
 def _lag(n):
     """
     Get Gauss-Laguerre nodes and weights for n points.
-    Parameters:
-    -----------
+    Parameters
+    ----------
     n : int
         The number of points.
-    Returns:
-    --------
+    Returns
+    -------
     tuple
         A tuple containing the nodes and weights.
     """
@@ -318,12 +318,12 @@ def _cheb_points(n):
     """
     Chebyshev points of the first kind in [-1, 1]. It is used for interpolation later.
     Faster than calling splines in some way.
-    Parameters:
-    -----------
+    Parameters
+    ----------
     n : int
         The number of points.
-    Returns:
-    --------
+    Returns
+    -------
     ndarray
         An array of Chebyshev points.
     """
@@ -334,14 +334,14 @@ def _cheb_points(n):
 def _bary_matrix(xc, xe):
     """
     Barycentric interpolation matrix from Chebyshev points (first kind) xc to points xe.
-    Parameters:
-    -----------
+    Parameters
+    ----------
     xc : ndarray
         Chebyshev points of the first kind.
     xe : ndarray
         Points to interpolate to.
-    Returns:
-    --------
+    Returns
+    -------
     ndarray
         The barycentric interpolation matrix.
     """
@@ -380,15 +380,15 @@ def Hankel_asymptotic_Expansion(z):
     Hankel expansion taken from here (https://dlmf.nist.gov/10.17). See 10.17.5 for more details.
     It coverges very fast so only few terms are needed.
     The below factors are used in the functions Hankel_asymptotic_Expansion() and it is hardcoded because the scipy's default function call is 130ns per value
-    
+
     This function is called a million times so it is needed to speed things up....
-    
-    Parameters:
-    -----------
+
+    Parameters
+    ----------
     z : float or ndarray
         The input value(s) for which to compute h(z).
-    Returns:
-    --------
+    Returns
+    -------
     complex or ndarray
         The computed value(s) of h(z).
     """
@@ -414,12 +414,12 @@ def _h_env(z):
     This function uses both the series expansion of the Bessel function used above and also the
     scipy functions, pickups the faster method which is accurate.
     h(z) = H0^(1)(z) exp(-iz) for real z > 0: smooth, ~ sqrt(2/(pi z)) e^{-i pi/4} for large z.
-    Parameters:
-    -----------
+    Parameters
+    ----------
     z : float or ndarray
         The input value(s) for which to compute h(z).
-    Returns:
-    --------
+    Returns
+    -------
     complex or ndarray
         The computed value(s) of h(z).
     """
@@ -754,6 +754,53 @@ class _LazyBands:
 class Solver1D:
     """
     Everything that does not depend on (w, y), for all wmin <= w <= wmax and all source positions
+    
+
+    Evaluation (all reuse the same nodes; psi is never evaluated again for the head):
+      s(w, y=None)            F at one frequency, one source position (default: y0)
+      s.spectrum(ws, y=None)  many frequencies, one source position   -> batched 1D non-uniform FFT
+      s.profile(w, ys)        one frequency, many source positions    -> direct sums
+      s.evaluate(ws, ys)      table (len(ys), len(ws))
+
+    Accuracy/tuning  parameters (defaults give ~1e-12):
+    cycles, ngl (phase cycles / maximum Gauss-Legendre nodes per head piece), nlag (Laguerre nodes on the tail), n_cheb (Chebyshev frequencies per band),
+    band_ratio (width of the frequency bands), xb_min (move the split outward = convergence test),
+    nufft_eps (FINUFFT tolerance), z_small (w y x below which J0 is used by its Taylor series),
+    adaptive_gl (True: pieces with little phase get fewer nodes, sized by an error bound calibrated
+    on the full pieces with ngl nodes; False: ngl nodes on every piece, as before).
+    PE_SETTINGS: lighter settings for parameter estimation (accuracy ~1e-8).
+
+    How a band is summed (speed): the head nodes near u = 0, where the phase w A_j changes by less than
+    a few radians across the band and w y x_j is small, are summed once into a polynomial in w
+    (Taylor series of exp(i (w - w_mid) A_j) and of J0; computed on the first call that needs the
+    band); only the remaining nodes are summed per frequency (directly, or by NUFFT for many
+    frequencies). Bands are built when first needed, so a few frequencies build only their bands.
+
+    Interpolation (for many frequencies)
+      interpolate  True (default): F is computed on Chebyshev panels sized by the lens time delays
+                   (number of points per panel from an error bound) and interpolated to the requested
+                   frequencies; used when it needs fewer exact evaluations than requested frequencies.
+                   False: every frequency is computed. 'auto': interpolate only for >= ~4000 frequencies.
+                   Can also be passed per call: s.spectrum(ws, y, interpolate=True).
+      interp_tol   the interpolant is checked against exact values at four frequencies per panel;
+                   a panel whose relative error exceeds interp_tol/3 is split (max 3 times); if
+                   interp_tol is still not reached, the exact path is used. None (default):
+                   max(1e-10, 100 nufft_eps), i.e. above the accuracy of the exact values (1e-7 with
+                   PE_SETTINGS).
+
+    Time origin (the phase of F)
+      time_origin  None (default): T = ``|x - y|^2/2 - psi(x)`` as it stands, no time shift.
+                   'first_image': time measured from the arrival of the first image, i.e. F is multiplied
+                   by exp(-i w T_min(y)), T_min = first_image_delay(y) (the phi_m(y) of Takahashi &
+                   Nakamura 2003 for the point mass). A number t0: F is multiplied by exp(-i w t0).
+                   Only the phase changes, by a term linear in w (a constant time shift).
+
+    Parallelism
+      n_workers   maximum number of processes for evaluate() (1: none; None: all cores); used only
+                  when timing of the first rows predicts a clear gain. close() stops the pool.
+      threads     FINUFFT threads per call (None = 1: the transforms are small and one thread is
+                  fastest; always 1 in forked or daemonic processes, e.g. bilby's npool workers).
+
     Parameters
     ----------
     lens : Potential or callable
@@ -853,8 +900,8 @@ class Solver1D:
         """
         Initialize the 1D lensing solver.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         lens :        Potential object (or a callable psi(x) for the lensing potential)
         y           : source position (default: 0.0)
         wmin, wmax  : frequency range (default: 1e-3, 1e3)
@@ -985,12 +1032,12 @@ class Solver1D:
         All weights for the head and tail integration are chosen here in this function.
         Make the nodes and weights for one frequency band [lo, hi].
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         lo : lower frequency bound
         hi : upper frequency bound
-        Returns:
-        --------
+        Returns
+        -------
         dict containing the following keys:
         - lo, hi : frequency bounds
         - ub : upper bound for the head (u_b = max(u_b0, 20 / lo))
@@ -1216,12 +1263,12 @@ class Solver1D:
         """
         Barycentric interpolation matrix from Chebyshev points b["cx"] to frequencies wb.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         b : dict containing the band information (from _make_band)
         wb : array of frequencies to interpolate to
-        Returns:
-        --------
+        Returns
+        -------
         Interpolation matrix of shape (len(wb), len(b["cx"])) that maps values at the Chebyshev points to values at the frequencies wb.     
         """
         if b["cx"].size == 1:
@@ -1310,14 +1357,14 @@ class Solver1D:
         """
         $sum_j C[k, j] exp(i w src_j)$ for every row k of C and every w in wb -> (rows, len(wb)).
         
-        Parameters:
-        -----------
+        Parameters
+        ----------
         src : array of source positions (x_j)
         C : 2D array of coefficients (C[k, j])
         wb : array of frequencies (w)
 
-        Returns:
-        --------
+        Returns
+        -------
         2D array of shape (C.shape[0], wb.size) containing the sums for each row of C and each frequency in wb.
         """
         C = np.atleast_2d(C)
@@ -1548,7 +1595,7 @@ class Solver1D:
         return F
 
     def _t0(self, y):
-        """
+        r"""
         Time origin for source position(s) y (see time_origin).
         This plays the role of $\phi_m(y)$ in the Fermat Potential to arrange the arrival time to the first image.
         But default we STRONGLY recommend to choosen "firs_image" as the time_origin. Otherwise your computed
@@ -1558,10 +1605,10 @@ class Solver1D:
 
     def first_image_delay(self, y):
         """
-        Time delay of the first image, T_min(y) = min over s of T(s) = (s - y)^2/2 - psi(|s|) on the lens
+        Time delay of the first image, T_min(y) = min over s of ``T(s) = (s - y)^2/2 - psi(|s|)`` on the lens
         axis (the global minimum of the Fermat potential), for a source position or an array of them.
         It is phi_m(y) of Takahashi & Nakamura (2003) for the point mass. Start at the lowest point of a
-        grid in |s| on both sides of the lens, then safeguarded Newton iteration on T'(s) = 0 to rounding
+        grid in ``|s|`` on both sides of the lens, then safeguarded Newton iteration on T'(s) = 0 to rounding
         (psi' by the complex step, psi'' by central differences of psi').
 
         Not doing this correct will create a mismatch in phase plot of the lensing amplification and likely also
@@ -1662,7 +1709,7 @@ class Solver1D:
 
     def timedelay_grid(self):
         """
-        y-independent grid on the lens axis (|s|, psi, lens-equation function g, caustics, core),
+        y-independent grid on the lens axis (``|s|``, psi, lens-equation function g, caustics, core),
         computed once per solver. It calculates a grid of the time-delay surface with additional information
         about extrema values 
         
@@ -1702,7 +1749,7 @@ class Solver1D:
    #optional interpolation in w
     def timedelay_range(self, y):
         """
-        (T_min, T_max) of the Fermat potential T(s) = (s - y)^2/2 - psi(|s|) on the lens axis at the
+        (T_min, T_max) of the Fermat potential ``T(s) = (s - y)^2/2 - psi(|s|)`` on the lens axis at the
         real images, at the points where images merge (caustics) and at s = 0 if psi(0) is finite.
         F(w) oscillates in w only through exp(i w T) at these times (plus smooth terms).
         """
@@ -1863,15 +1910,15 @@ class Solver1D:
         long duration signals can be done in a fast and efficient manner for TDFstat analysis or other
         CW search pipelines being used in the collaboration. The evaluation happens as a rapid pace..
 
-        Parameters:
+        Parameters
         ----------
         w: float
            You frquency choice for a CW signal
         ys: array_like
            Pass your y array (may be from Einstein Crossing time for microlensing)
 
-        Returns:
-        --------
+        Returns
+        -------
          Amplification factor
         
         """
@@ -1973,24 +2020,24 @@ def amplification(w, y, lens, estimate_error=False, **kw):
     Pairs are grouped by the coordinate with fewer distinct values (one spectrum per distinct y, or
     one profile per distinct w); if they fill most of a grid, the table is computed instead.
     It supports all keywords of Solver1D, e.g. nlag, ngl, n_cheb, y_radius, threads, n_workers,
-    interpolate, and **PE_SETTINGS.
+    interpolate, and ``**PE_SETTINGS``.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     w : float or array_like
         Frequencies (w = 0 gives F = 1).
     y : float or array_like
-        Source positions (|y| is used); broadcast against w.
+        Source positions (``|y|`` is used); broadcast against w.
     lens : Potential or callable
         Lens potential psi(x).
     estimate_error : bool, optional
-        If True, also returns |F - F'| with F' from a solver with more nodes and a farther split
+        If True, also returns ``|F - F'|`` with F' from a solver with more nodes and a farther split
         (an estimate of the error, same shape as F).
     **kw : dict
         Keyword arguments of Solver1D (see the Solver1D class for available options).
 
-    Returns:
-    --------
+    Returns
+    -------
     F with the broadcast shape of w and y (a complex scalar if both are scalars); with
     estimate_error, the tuple (F, error).
     """
@@ -2063,8 +2110,8 @@ def amplification_spectrum(ws, y, lens, estimate_error=False, **kw):
     (one solver, s.spectrum). Formerly amplification_many.
     It supports all keywords of Solver1D, e.g. nlag, ngl, n_cheb, y_radius, threads, n_workers,interpolate etc.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     ws : array_like
         Frequencies at which to compute the amplification factor.
     y : float
@@ -2076,8 +2123,8 @@ def amplification_spectrum(ws, y, lens, estimate_error=False, **kw):
     **kw : dict
         Additional keyword arguments to pass to the Solver1D class.(See the Solver1D class for available options.)
 
-    Returns :   
-    --------    
+    Returns
+    -------
     Amplification factor F at the specified frequencies. If estimate_error is True, also returns an array of estimated errors.
     """
     ws = np.atleast_1d(np.asarray(ws, dtype=float))
@@ -2095,12 +2142,12 @@ def amplification_spectrum(ws, y, lens, estimate_error=False, **kw):
 
 def _y_range(ys):
     """Compute the center and radius of the range of source positions.
-    Parameters:
-    -----------
+    Parameters
+    ----------
     ys : array_like
         Array of source positions.
-    Returns:
-    --------
+    Returns
+    -------
     yc : float
         Center of the range of source positions.
     R : float
@@ -2118,8 +2165,8 @@ def amplification_profile(w, ys, lens, **kw):
     (one solver, s.profile).
     It supports all keywords of Solver1D, e.g. nlag, ngl, n_cheb, y_radius, threads, n_workers,interpolate etc.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     w : float
         Frequency at which to compute the amplification factor.
     ys : array_like
@@ -2129,8 +2176,8 @@ def amplification_profile(w, ys, lens, **kw):
     **kw : dict
         Additional keyword arguments to pass to the Solver1D class.(See the Solver1D class for available options.)
     
-    Returns:
-    --------
+    Returns
+    -------
     Amplification factor F at the specified frequency for each source position in ys.   
     """
     yc, R = _y_range(ys)
@@ -2145,8 +2192,8 @@ def amplification_table(ws, ys, lens, **kw):
     Pass n_workers=None (all cores) or n_workers=k to compute the rows in parallel.
     It supports all keywords of Solver1D, e.g. nlag, ngl, n_cheb, y_radius, threads, n_workers,interpolate etc.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     ws : array_like
         Frequencies at which to compute the amplification factor.
     ys : array_like
@@ -2156,8 +2203,8 @@ def amplification_table(ws, ys, lens, **kw):
     **kw : dict
         Additional keyword arguments to pass to the Solver1D class.(See the Solver1D class for available options.)  
     
-    Returns:
-    --------
+    Returns
+    -------
     2D array of shape (len(ys), len(ws)) containing the amplification factors for each combination of frequency and source position.        
     """
     ws = np.atleast_1d(np.asarray(ws, dtype=float))

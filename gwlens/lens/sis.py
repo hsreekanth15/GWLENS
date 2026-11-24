@@ -169,16 +169,19 @@ class SIS(Lens):
         1. NEARBY  (zl = 0 or low-z): provide distances explicitly.
         All three must be astropy Quantities with distance units.
 
-        Example:
+        Example::
+
             halo.effective_distance(Dl=100*u.kpc, Dls=50*u.kpc, Ds=130*u.kpc)
 
         2. COSMOLOGICAL (zl > 0): provide only the source redshift zs.
         Angular diameter distances are computed from self.zl and zs.
         Optionally pass a custom astropy cosmology object.
 
-        Example:
+        Example::
+
             halo.effective_distance(zs=1.5)
             halo.effective_distance(zs=1.5, cosmo=my_cosmo)
+
         ─────────────────────────────────────────────────────────────────
         Returns: Deff in kpc
         """

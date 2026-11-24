@@ -11,7 +11,6 @@ sys.path.insert(0, os.path.abspath("../.."))
 
 # -- Project information -----------------------------------------------------
 project = 'GWLENS'
-copyright = '2026'
 author = 'Sreekanth Harikumar'
 copyright = f'2026, {author}'
 release = '0.1'
@@ -32,7 +31,7 @@ extensions = [
 myst_enable_extensions = ["colon_fence", "dollarmath", "amsmath"]  # lets sphinx_design use ::: fences in .md
 
 templates_path = ['_templates']
-exclude_patterns = ['_build', 'Thumbs.db', '**.ipynb_checkpoints','examples/animations.ipynb']
+exclude_patterns = ['_build', 'Thumbs.db', '**.ipynb_checkpoints']
 napoleon_numpy_docstring = True
 napoleon_google_docstring = False
 
@@ -47,7 +46,6 @@ nbsphinx_codecell_lexer = "python3"
 # -- Options for HTML output -------------------------------------------------
 html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
-html_css_files = ['custom.css']
 html_theme_options = {
     "collapse_navigation": False,
     "navigation_depth": 4,

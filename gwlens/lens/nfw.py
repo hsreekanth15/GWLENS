@@ -268,7 +268,8 @@ class NFW1(Lens):
         Classify an image position using the eigenvalues of the lensing
         Jacobian  A = I − ∇∇ψ.
 
-        Morse index n:
+        Morse index n::
+
             n = 0   → minimum   (both eigenvalues of A > 0, det A > 0, tr A > 0)
             n = 1/2 → saddle    (det A < 0  ↔  one eigenvalue negative)
             n = 1   → maximum   (both eigenvalues < 0, det A > 0, tr A < 0)
@@ -812,7 +813,7 @@ class NFW1(Lens):
         Parameters
         ----------
         theta : float  – ωh, phase accumulation per half-panel
-        K     : int    – Taylor truncation order (used when |θ| < 0.5)
+        K     : int    – Taylor truncation order (used when ``|θ| < 0.5``)
         """
         if abs(theta) < 0.5:
             # Stable Taylor series: Iₙ = Σₖ (iθ)ᵏ/k! · 2^{n+k+1}/(n+k+1)
@@ -840,8 +841,10 @@ class NFW1(Lens):
         """
         NFW wave-optics amplification F(w) via Filon quadrature.
 
-        After t = r²/2 the Kirchhoff integral becomes:
+        After t = r²/2 the Kirchhoff integral becomes::
+
             F = (w/i) exp(iwy²/2) ∫₀ᵀ f(t) e^{iwt} dt
+
         with f(t) = J₀(wy√(2t)) exp(-iw ψ(√(2t))).
 
         Filon treats e^{iwt} analytically (exact for any panel width)

@@ -14,24 +14,28 @@ old CPU's we recommend using lookup table or find a better cpu to run!!!
 .. autoclass:: gwlens.pe.waveform.LensedWaveformGenerator
    :members:
    :show-inheritance:
+   :no-index:
 ```
 
 ```{eval-rst}
 .. autoclass:: gwlens.pe.waveform.LensModel
    :members:
    :show-inheritance:
+   :no-index:
 ```
 
 ```{eval-rst}
 .. autoclass:: gwlens.pe.waveform.LookupTable
    :members:
    :show-inheritance:
+   :no-index:
 ```
 
 ```{eval-rst}
 .. autoclass:: gwlens.pe.waveform.LensingSettings
    :members:
    :show-inheritance:
+   :no-index:
 ```
 
 ## Main

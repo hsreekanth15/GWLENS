@@ -4,14 +4,6 @@ gwlens.pe package
 Submodules
 ----------
 
-gwlens.pe.cwpe module
----------------------
-
-.. automodule:: gwlens.pe.cwpe
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
 gwlens.pe.main module
 ---------------------
 

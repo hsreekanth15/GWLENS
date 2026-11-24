@@ -65,7 +65,7 @@ examples/solver1d_tutorial
 examples/creating_lens
 axisymmetric_lenses
 non-axisymmetric_lens
-cbc_lensed_parameter_estimation
+cbc_lens_pe
 cw_datageneration
 cw_microlensing
 ```

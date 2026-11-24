@@ -162,7 +162,7 @@ class Lens:
 
     psi       callable psi(x1, x2) -> array; analytic operations only (see module docstring)
     singular  iterable of (x1, x2) points where psi is not smooth
-    q_inf     kappa + |gamma| of external sheet / shear (None: estimate automatically)
+    q_inf     kappa + ``|gamma|`` of external sheet / shear (None: estimate automatically)
     """
 
     def __init__(self, psi, singular=(), q_inf=None):
@@ -240,7 +240,7 @@ def point_mass(m=1.0, x0=(0.0, 0.0)):
 
 
 def sis(psi0=1.0, x0=(0.0, 0.0)):
-    """psi = psi0 |x - x0|."""
+    """``psi = psi0 |x - x0|``."""
     a, b, p = float(x0[0]), float(x0[1]), float(psi0)
     return Lens(lambda x1, x2: p * np.sqrt((x1 - a)**2 + (x2 - b)**2), singular=[(a, b)], q_inf=0.0)
 
@@ -262,7 +262,7 @@ def cis(psi0=1.0, rc=0.05, x0=(0.0, 0.0)):
 
 
 def nfw(k=1.0, psi0=1.0, x0=(0.0, 0.0)):
-    """NFW: 0.5 psi0 [ln^2(v/2) + arccos^2(1/v)], v = k |x - x0|  (k = xi0 / r_s)."""
+    """NFW: 0.5 psi0 [ln^2(v/2) + arccos^2(1/v)], v = k ``|x - x0|``  (k = xi0 / r_s)."""
     a, b, p, k = float(x0[0]), float(x0[1]), float(psi0), float(k)
 
     def f(x1, x2):
@@ -272,7 +272,7 @@ def nfw(k=1.0, psi0=1.0, x0=(0.0, 0.0)):
 
 
 def external_shear(gamma1=0.0, gamma2=0.0, kappa=0.0):
-    """psi = kappa |x|^2/2 + [gamma1 (x1^2 - x2^2) + 2 gamma2 x1 x2]/2."""
+    """``psi = kappa |x|^2/2 + [gamma1 (x1^2 - x2^2) + 2 gamma2 x1 x2]/2``."""
     g1, g2, k = float(gamma1), float(gamma2), float(kappa)
     f = lambda x1, x2: 0.5 * (k * (x1 * x1 + x2 * x2) + g1 * (x1 * x1 - x2 * x2) + 2 * g2 * x1 * x2)
     return Lens(f, singular=[], q_inf=k + np.hypot(g1, g2))
@@ -522,7 +522,7 @@ class Solver2D:
 
     center        centre of the polar coordinates. 'auto' (default): the cheapest of the singular points
                   and their centroid, judged by a quick estimate of the grid size (often the centroid
-                  for several similar lenses: |y - c| and the split radius are then small, giving
+                  for several similar lenses: ``|y - c|`` and the split radius are then small, giving
                   2-3x fewer nodes). 'nearest': the singular point nearest to y (the old default).
                   Or a point (x1, x2). info['center_costs'] lists the estimates.
 
@@ -548,6 +548,7 @@ class Solver2D:
                   None / 'auto': the same with k = all available cores. BLAS always runs on one
                   thread inside a transform (needs threadpoolctl; pip install threadpoolctl), and
                   forked or pool-worker processes always use one thread.
+
     To use many cores, run many independent calls (source positions, likelihood evaluations) in
     parallel, each on one thread, rather than one call on many threads.
 
@@ -562,7 +563,7 @@ class Solver2D:
                    same transform); panels are refined if the relative error exceeds it.
 
     Time origin (the phase of F)
-      time_origin  None (default): T = |x - y|^2/2 - psi(x) as it stands, no time shift.
+      time_origin  None (default): T = ``|x - y|^2/2 - psi(x)`` as it stands, no time shift.
                    'first_image': time measured from the arrival of the first image, i.e. F is multiplied
                    by exp(-i w T_min(y)), T_min = first_image_delay(y) (the global minimum of T; GLoW's
                    t_min). A number t0: F is multiplied by exp(-i w t0). Only the phase changes, by a
@@ -1111,9 +1112,9 @@ class Solver2D:
 
     def first_image_delay(self, y):
         """
-        Time delay of the first image, T_min(y) = min over x of T(x) = |x - y|^2/2 - psi(x) (the global
+        Time delay of the first image, T_min(y) = min over x of ``T(x) = |x - y|^2/2 - psi(x)`` (the global
         minimum of the Fermat potential; GLoW's t_min), for source positions y of shape (2,) or (..., 2).
-        All local minima of T on a grid over |x - c| <= x_b (where every image lies) are refined by a
+        All local minima of T on a grid over ``|x - c| <= x_b`` (where every image lies) are refined by a
         damped Newton iteration to rounding (gradient by the complex step, Hessian by central
         differences of the gradient); the lowest is returned.
         """
@@ -1259,8 +1260,8 @@ class Solver2D:
     def timedelay_range(self, y):
         """
         This is a 2D verison of the smae time delay that you can find in the solver1d.py script.
-        (T_min, T_max) of the time delay T(x) = |x - y|^2/2 - psi(x) over its stationary points
-        (images; local minima of |grad T| also catch merging/virtual images) and over singular points
+        (T_min, T_max) of the time delay ``T(x) = |x - y|^2/2 - psi(x)`` over its stationary points
+        (images; local minima of ``|grad T|`` also catch merging/virtual images) and over singular points
         where psi is finite (cusps, cores). F(w) oscillates in w only through exp(i w T) at these.
         
         """
@@ -1455,10 +1456,10 @@ def amplification(w, y, lens, estimate_error=False, return_info=False, **kw):
     Pairs are grouped by the coordinate with fewer distinct values (one spectrum per distinct
     position, or one map per distinct w); if they fill most of a grid, the table is computed instead.
     It supports all keywords of Solver2D, e.g. ngl, nlag, y_radius, map_ext, threads, n_workers,
-    interpolate, and **PE_SETTINGS.
+    interpolate, and ``**PE_SETTINGS``.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     w : float or array_like
         Frequencies (w = 0 gives F = 1).
     y : array_like, shape (..., 2)
@@ -1466,15 +1467,15 @@ def amplification(w, y, lens, estimate_error=False, return_info=False, **kw):
     lens : Lens
         Lens model (see Lens and the ready-made lenses).
     estimate_error : bool, optional
-        If True, also returns max(|F - F'|, |F - F''|) with F' from twice the tail directions and F''
+        If True, also returns ``max(|F - F'|, |F - F''|)`` with F' from twice the tail directions and F''
         from a farther split (an estimate of the error, same shape as F).
     return_info : bool, optional
         If True, also returns the solver's info dict.
     **kw : dict
         Keyword arguments of Solver2D (see the Solver2D class for available options).
 
-    Returns:
-    --------
+    Returns
+    -------
     F with the broadcast shape of w and y[..., 0] (a complex scalar if w is a scalar and y one
     position); then the error (if estimate_error) and the info dict (if return_info), as a tuple.
     """

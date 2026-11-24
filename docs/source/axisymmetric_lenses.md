@@ -1,6 +1,6 @@
 # Axisymmetric lenses
 
-Lens potentials $\psi(x)$ available in `solver1d`, with free parameters listed per model. Any analytic $\psi(x)$ can be supplied in addition to these (see {doc}`creating_your_lens`), and potentials can be added with `+` to build composite lenses. These potentials have identical forms in `solver2d`, with $x$ replaced by $\lvert\boldsymbol{x}-\boldsymbol{x}_0\rvert$.
+Lens potentials $\psi(x)$ available in `solver1d`, with free parameters listed per model. Any analytic $\psi(x)$ can be supplied in addition to these (see {doc}`examples/creating_lens`), and potentials can be added with `+` to build composite lenses. These potentials have identical forms in `solver2d`, with $x$ replaced by $\lvert\boldsymbol{x}-\boldsymbol{x}_0\rvert$.
 
 | Model | Parameters | Function call | $\psi(x)$ |
 |---|---|---|---|

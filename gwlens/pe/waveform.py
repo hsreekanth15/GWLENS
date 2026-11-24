@@ -400,13 +400,21 @@ def lensed_source_model(model, base, settings):
 class LensedWaveformGenerator(WaveformGenerator):
     """bilby WaveformGenerator for any unlensed frequency-domain source model times F (see module doc).
 
-    lens_model        built-in name, dotted path to a lens function, or the function
-    lens_solver       "1d", "2d" or None (the model's own)
-    use_lookup_table  True: interpolate lookup_table; False: compute F with the solver
-    time_origin       None (T as it stands) or "first_image" (time from the first image's arrival)
-    priors / ranges   region of the lens parameters ({parameter: [lo, hi], "w": [lo, hi]}); the solver is
-                      built once for it. Without it, a solver is built for each new source position.
-    Each can also be given in waveform_arguments with a lens_ prefix (as gwlens_pipe does).
+    Parameters
+    ----------
+    lens_model
+        Built-in name, dotted path to a lens function, or the function.
+    lens_solver
+        ``"1d"``, ``"2d"`` or None (the model's own).
+    use_lookup_table
+        True: interpolate ``lookup_table``; False: compute F with the solver.
+    time_origin
+        None (T as it stands) or ``"first_image"`` (time from the first image's arrival).
+    priors / ranges
+        Region of the lens parameters (``{parameter: [lo, hi], "w": [lo, hi]}``); the solver is
+        built once for it. Without it, a solver is built for each new source position.
+
+    Each can also be given in ``waveform_arguments`` with a ``lens_`` prefix (as gwlens_pipe does).
     """
     LAL_SIM_INSPIRAL_SPINS_FLOW = 1
 

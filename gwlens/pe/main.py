@@ -11,7 +11,7 @@ and if lensed-injection and/or lensed-recovery is True it
    gwlens.pe.waveform.LensedWaveformGenerator, which lenses the unlensed frequency-domain source model
    (frequency-domain-source-model / injection-frequency-domain-source-model, with their approximants).
 
-Everything else is stock bilby_pipe; the run is reproducible from the *_config_complete.ini.
+Everything else is stock bilby_pipe; the run is reproducible from the ``*_config_complete.ini``.
 """
 import ast
 import os

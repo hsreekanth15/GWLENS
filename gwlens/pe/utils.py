@@ -136,7 +136,7 @@ def _shape_step(model, ranges, fixed, name, w_hi, n_probe=5):
     T = []
     for v in vals:
         s = _make_solver(model, model.make_lens(dict(fixed, **{name: v})), ranges, w_hi, w_hi)
-        T.append([s._time_delay_range(np.asarray(model.position(q)) if model.solver == "2d" else model.position(q))
+        T.append([s.timedelay_range(np.asarray(model.position(q)) if model.solver == "2d" else model.position(q))
                   for q in probes])
         s.close()
     T = np.array(T)                                                # (n_probe, positions, 2)

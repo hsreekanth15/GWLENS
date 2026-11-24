@@ -12,3 +12,6 @@ build/
 # Editor and OS files
 .vscode/
 .DS_Store
+
+# Data written when running the example notebooks
+docs/source/examples/*.npz

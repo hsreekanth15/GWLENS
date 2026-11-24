@@ -1,29 +1,101 @@
 /* =====================================================================
    FONTS
-   EB Garamond: landing title, tagline, h2-h4.  JetBrains Mono: code.
+   IBM Plex Sans: body text and headings.  Monaspace Xenon: code.
+   Files live in _static/fonts/IBMPlexSans and _static/fonts/MonaspaceXenon.
    ===================================================================== */
+
+/* IBM Plex Sans (Fontsource files, split into latin + latin-ext).
+   unicode-range means latin-ext is only downloaded on pages that use
+   accented letters outside Latin-1 (e.g. ő, ł). */
 @font-face {
-  font-family: "JetBrains Mono";
-  src: url("fonts/JetBrainsMono/JetBrainsMono-Regular.woff2") format("woff2");
+  font-family: "IBM Plex Sans";
+  src: url("fonts/IBMPlexSans/ibm-plex-sans-latin-400-normal.woff2") format("woff2");
+  font-weight: 400; font-style: normal; font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("fonts/IBMPlexSans/ibm-plex-sans-latin-ext-400-normal.woff2") format("woff2");
+  font-weight: 400; font-style: normal; font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("fonts/IBMPlexSans/ibm-plex-sans-latin-400-italic.woff2") format("woff2");
+  font-weight: 400; font-style: italic; font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("fonts/IBMPlexSans/ibm-plex-sans-latin-ext-400-italic.woff2") format("woff2");
+  font-weight: 400; font-style: italic; font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("fonts/IBMPlexSans/ibm-plex-sans-latin-500-normal.woff2") format("woff2");
+  font-weight: 500; font-style: normal; font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("fonts/IBMPlexSans/ibm-plex-sans-latin-ext-500-normal.woff2") format("woff2");
+  font-weight: 500; font-style: normal; font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("fonts/IBMPlexSans/ibm-plex-sans-latin-600-normal.woff2") format("woff2");
+  font-weight: 600; font-style: normal; font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("fonts/IBMPlexSans/ibm-plex-sans-latin-ext-600-normal.woff2") format("woff2");
+  font-weight: 600; font-style: normal; font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* Monaspace Xenon (no 700 file on purpose: Pygments' bold keywords
+   fall back to SemiBold, which sits better next to regular code) */
+@font-face {
+  font-family: "Monaspace Xenon";
+  src: url("fonts/MonaspaceXenon/MonaspaceXenon-Regular.woff2") format("woff2");
   font-weight: 400; font-style: normal; font-display: swap;
 }
-/* UNUSED (nothing requests weight 500 in mono yet)
 @font-face {
-  font-family: "JetBrains Mono";
-  src: url("fonts/JetBrainsMono/JetBrainsMono-Medium.woff2") format("woff2");
-  font-weight: 500; font-style: normal; font-display: swap;
-}
-*/
-@font-face {
-  font-family: "EB Garamond";
-  src: url("fonts/EBGaramond/EBGaramond-Medium.woff2") format("woff2");
-  font-weight: 500; font-style: normal; font-display: swap;
+  font-family: "Monaspace Xenon";
+  src: url("fonts/MonaspaceXenon/MonaspaceXenon-Italic.woff2") format("woff2");
+  font-weight: 400; font-style: italic; font-display: swap;
 }
 @font-face {
-  font-family: "EB Garamond";
-  src: url("fonts/EBGaramond/EBGaramond-Bold.woff2") format("woff2");
+  font-family: "Monaspace Xenon";
+  src: url("fonts/MonaspaceXenon/MonaspaceXenon-SemiBold.woff2") format("woff2");
   font-weight: 600; font-style: normal; font-display: swap;
 }
+
+/* body text (replaces the theme's Lato) */
+body,
+input, button, select, textarea,
+.rst-versions {
+  font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  font-weight: 400;
+}
+.rst-content p, .rst-content li { line-height: 1.65; }
+strong, b { font-weight: 600; }
+
+/* headings (replaces the theme's Roboto Slab) */
+h1, h2, h3, h4, h5, h6, legend,
+.rst-content .toctree-wrapper > p.caption,
+.rst-content .sidebar .sidebar-title {
+  font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.rst-content h1 { font-size: 2rem; }
+.rst-content h2 { font-size: 1.6rem; }
+.rst-content h3 { font-size: 1.3rem; }
+.rst-content h4 { font-size: 1.1rem; font-weight: 500; }
 
 /* code font */
 .rst-content code,
@@ -32,33 +104,19 @@
 .rst-content .highlight pre,
 div.nbinput .input_area pre,
 div.nboutput .output_area pre {
-  font-family: "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+  font-family: "Monaspace Xenon", Consolas, "Liberation Mono", monospace;
+  font-feature-settings: "calt" 1;   /* Monaspace texture healing */
 }
 .rst-content code,
 .rst-content .literal { font-size: 0.85em; }
 .rst-content .highlight pre,
 div.nbinput .input_area pre { font-size: 0.85rem; line-height: 1.5; }
 
-/* REDUNDANT (the full title rule below sets the same font-family)
-.rst-content section#gwlens > h1,
-.rst-content div#gwlens > h1 { font-family: "EB Garamond", Georgia, serif; }
-.gw-tagline { font-family: "EB Garamond", Georgia, serif; }
-*/
-
-/* headings in EB Garamond */
-.rst-content h2,
-.rst-content h3,
-.rst-content h4 {
-  font-family: "EB Garamond", Georgia, serif;
-  font-weight: 600;
-}
-.rst-content h2 { font-size: 1.9rem; }
-.rst-content h3 { font-size: 1.5rem; }
-
-/* landing-page title in small caps, like \textsc */
+/* landing-page title in small caps, like \textsc
+   (Plex has no true small caps, so the browser scales the capitals) */
 .rst-content section#gwlens > h1,
 .rst-content div#gwlens > h1 {
-  font-family: "EB Garamond", Georgia, serif;
+  font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
   font-weight: 600;
   font-size: 3rem;
   letter-spacing: .04em;
@@ -74,8 +132,8 @@ div.nbinput .input_area pre { font-size: 0.85rem; line-height: 1.5; }
 
 /* tagline with the acronym expanded */
 .gw-tagline {
-  font-family: "EB Garamond", Georgia, serif;
-  font-size: 1.25rem; font-style: italic;
+  font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  font-size: 1.15rem; font-style: italic;
   color: #555; margin: 0 0 1.5rem;
 }
 
@@ -137,7 +195,7 @@ div.nbinput .input_area pre { font-size: 0.85rem; line-height: 1.5; }
 }
 @media (min-width: 1500px) { #page-toc { display: block; } }
 #page-toc .page-toc-title {
-  font-weight: 700; text-transform: uppercase; font-size: 0.75rem;
+  font-weight: 600; text-transform: uppercase; font-size: 0.75rem;
   letter-spacing: 0.05em; color: #777; margin-bottom: 0.6rem;
 }
 #page-toc ul { list-style: none; margin: 0; padding: 0; border-left: 2px solid #e1e4e5; }

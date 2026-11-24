@@ -419,7 +419,7 @@ def split_point(y):
     return max(3.0, y + np.sqrt(y * y + 2))
 
 def head_edges(w, y, ub, umin):
-    """Edges in [umin, ub]: one cycle of |d phase| + J0 phase per piece."""
+    """Edges in [umin, ub]: one cycle of ``|d phase|`` + J0 phase per piece."""
     n_log = int(3000 + 8 * (w / 2) * np.log(ub / umin) / (2 * np.pi))
     n_lin = int(max(3000, 8 * w * ub / (2 * np.pi)))
     ug = np.unique(np.concatenate([np.geomspace(umin, ub, n_log), np.linspace(umin, ub, n_lin)]))
