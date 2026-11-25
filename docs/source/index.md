@@ -52,8 +52,7 @@ pip install gwlens
 :caption: Contents
 
 installation
-getting_started
-Twisted_tail_method
+examples/Twisted_tail_method
 ```
 
 ```{toctree}

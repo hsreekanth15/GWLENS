@@ -1,7 +1,7 @@
 (function () {
   var root = document.documentElement, KEY = "gw-theme";
   var mq = window.matchMedia("(prefers-color-scheme: dark)");
-  var MODES = ["auto", "light", "dark"];
+  var MODES = [ "light", "dark"];
   var btn = null;
 
   var ICONS = {
@@ -11,8 +11,8 @@
   var LABEL = { auto: "Theme: follow system", light: "Theme: light", dark: "Theme: dark" };
 
   function stored() {
-    try { var v = localStorage.getItem(KEY); return MODES.indexOf(v) >= 0 ? v : "auto"; }
-    catch (e) { return "auto"; }
+    try { var v = localStorage.getItem(KEY); return MODES.indexOf(v) >= 0 ? v : "light"; }
+    catch (e) { return "light"; }
   }
   function effective(mode) {
     return mode === "auto" ? (mq.matches ? "dark" : "light") : mode;

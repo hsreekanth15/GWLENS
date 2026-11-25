@@ -5,6 +5,7 @@ GWLENS is available on PyPI and can be installed with pip:
 ```bash
 pip install gwlens
 ```
+The pipeline is tested with the Python versions 3.11  and 3.12. But the it should also work on higher versions as well.  
 
 If you would like to install the latest version for development, they can clone the repository and install as :
 
