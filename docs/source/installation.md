@@ -6,12 +6,12 @@ GWLENS is available on PyPI and can be installed with pip:
 pip install gwlens
 ```
 
-If the user wants to install the latest development version, they can clone the repository and install it with pip:
+If you would like to install the latest version for development, they can clone the repository and install as :
 
 ```bash
 git clone https://github.com/hsreekanth15/GWLENS.git
 cd GWLENS
-pip install .
+pip install -e .
 ```
 
 If you want to install the development version with the documentation dependencies, you can use:
